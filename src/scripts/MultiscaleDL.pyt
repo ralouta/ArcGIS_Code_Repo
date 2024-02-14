@@ -19,6 +19,10 @@ tolerance for a list of building areas. The model will then intersect all the ou
 one final buildings feature class"""
 
 import arcpy
+from arcgis.gis import GIS
+
+import requests
+
 import torch
 import os
 
@@ -46,7 +50,7 @@ class MultiScaleDL(object):
         # Define parameters for the tool
         params = [arcpy.Parameter(displayName="Input Raster",
                                 name="in_raster",
-                                datatype="GPRasterLayer",
+                                datatype=["DEMapServer", "GPRasterDataLayer"],
                                 parameterType="Required",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Cell Sizes",
@@ -156,11 +160,52 @@ class MultiScaleDL(object):
         # Set the GPU ID
         arcpy.env.gpuId = gpu_id
 
-        # Get the spatial reference of the input raster
-        spatial_ref = arcpy.Describe(in_raster).spatialReference
+        # Check if in_raster is a URL
+        if in_raster.startswith('http'):
+            # Your ArcGIS Online username and password
+            username = 'ralouta.aiddev'
+            password = 'RamiW0rk$@esri0316'
 
+            # The URL of the generateToken endpoint
+            token_url = 'https://www.arcgis.com/sharing/rest/generateToken'
+
+            # The parameters for the POST request
+            params = {
+                'username': username,
+                'password': password,
+                'referer': 'https://www.arcgis.com',
+                'f': 'pjson'
+            }
+
+            # Send a POST request to the generateToken endpoint
+            response = requests.post(token_url, data=params)
+
+            # Parse the JSON response
+            json_response = response.json()
+
+            # Get the token from the response
+            token = json_response['token']
+
+            rest_url = f'{in_raster}?token={token}&f=pjson'
+            # Send a GET request to the REST URL
+            response = requests.get(rest_url)
+            # Parse the JSON response
+            json_response = response.json()
+
+            # Get the spatial reference
+            spatial_ref = json_response['spatialReference']
+            wkid = spatial_ref['wkid']
+            # Create a Spatial Reference object
+            spatial_ref_obj = arcpy.SpatialReference(wkid)
+
+            arcpy.AddMessage(f"The spatial reference of the input raster is {wkid}.")
+                
+        else:
+            # Get the spatial reference of the input raster
+            desc = arcpy.Describe(in_raster)
+            spatial_ref_obj = desc.spatialReference
         # Set the output coordinate system to be the same as the input raster
-        arcpy.env.outputCoordinateSystem = spatial_ref
+        arcpy.env.outputCoordinateSystem = spatial_ref_obj
 
         # Get the number of times "Detect Objects Using Deep Learning" will run
         num_runs = len(cell_sizes)
