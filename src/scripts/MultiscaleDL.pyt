@@ -19,7 +19,6 @@ tolerance for a list of building areas. The model will then intersect all the ou
 one final buildings feature class"""
 
 import arcpy
-from arcgis.gis import GIS
 
 import requests
 
@@ -98,6 +97,7 @@ class MultiScaleDL(object):
                                 datatype="GPExtent",
                                 parameterType="Optional",
                                 direction="Input")]
+                
 
         # Set a filter to only accept .dlpk files for the "Model Definition" parameter
         params[2].filter.list = ['dlpk']
@@ -128,6 +128,8 @@ class MultiScaleDL(object):
                 if not cell_size.isdigit():
                     parameters[0].setErrorMessage("Cell Sizes must be a comma-separated list of numbers.")
         return
+    
+        
 
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
@@ -162,29 +164,8 @@ class MultiScaleDL(object):
 
         # Check if in_raster is a URL
         if in_raster.startswith('http'):
-            # Your ArcGIS Online username and password
-            username = 'ralouta.aiddev'
-            password = 'RamiW0rk$@esri0316'
-
-            # The URL of the generateToken endpoint
-            token_url = 'https://www.arcgis.com/sharing/rest/generateToken'
-
-            # The parameters for the POST request
-            params = {
-                'username': username,
-                'password': password,
-                'referer': 'https://www.arcgis.com',
-                'f': 'pjson'
-            }
-
-            # Send a POST request to the generateToken endpoint
-            response = requests.post(token_url, data=params)
-
-            # Parse the JSON response
-            json_response = response.json()
-
-            # Get the token from the response
-            token = json_response['token']
+            # Get a token from the active portal
+            token = arcpy.GetSigninToken()['token']
 
             rest_url = f'{in_raster}?token={token}&f=pjson'
             # Send a GET request to the REST URL
