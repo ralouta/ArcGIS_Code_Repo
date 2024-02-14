@@ -162,6 +162,11 @@ class MultiScaleDL(object):
         # Set the GPU ID
         arcpy.env.gpuId = gpu_id
 
+        # Clear the CUDA cache
+        arcpy.AddMessage("Clearing CUDA cache...")
+        torch.cuda.empty_cache()
+        arcpy.AddMessage("CUDA cache cleared.")
+        
         # Check if in_raster is a URL
         if in_raster.startswith('http'):
             # Get a token from the active portal
