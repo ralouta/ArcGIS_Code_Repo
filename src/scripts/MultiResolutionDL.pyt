@@ -32,8 +32,8 @@ class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
-        self.label = "MultiScaleDL"
-        self.alias = "Multi Scale Deep Learning"
+        self.label = "MultiResolutionDL"
+        self.alias = "Multi Resolution Deep Learning"
 
         # List of tool classes associated with this toolbox
         self.tools = [MultiScaleDL]
@@ -42,8 +42,8 @@ class Toolbox(object):
 class MultiScaleDL(object):
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
-        self.label = "MultiScaleDL"
-        self.description = "Multi Scale Deep Learning"
+        self.label = "Multi Resolution Deep Learning"
+        self.description = "Multi Resolution Deep Learning"
         self.canRunInBackground = True
 
     def getParameterInfo(self):
