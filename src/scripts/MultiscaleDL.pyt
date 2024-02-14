@@ -22,6 +22,8 @@ import arcpy
 
 import requests
 
+import re
+
 import torch
 import os
 
@@ -36,7 +38,7 @@ class Toolbox(object):
         # List of tool classes associated with this toolbox
         self.tools = [MultiScaleDL]
 
-
+        
 class MultiScaleDL(object):
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
@@ -122,21 +124,21 @@ class MultiScaleDL(object):
         """Modify the values and properties of parameters before internal
         validation is performed.  This method is called whenever a parameter
         has been changed."""
-        if parameters[0].altered:
-            cell_sizes = parameters[0].valueAsText.split(',')
-            for cell_size in cell_sizes:
-                if not cell_size.isdigit():
-                    parameters[0].setErrorMessage("Cell Sizes must be a comma-separated list of numbers.")
+        if parameters[1].valueAsText:
+            # Regular expression for decimal values separated by commas
+            pattern = r'^(\d+(\.\d+)?,)*\d+(\.\d+)?$'
+            if not re.match(pattern, parameters[1].valueAsText):
+                parameters[1].setErrorMessage('Invalid input format. Please enter decimal values separated by commas.')
         return
-    
-        
 
+    
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
         parameter.  This method is called after internal validation."""
+        if parameters[1].hasBeenValidated and parameters[1].valueAsText and not re.match(r'^(\d+(\.\d+)?,)*\d+(\.\d+)?$', parameters[1].valueAsText):
+            parameters[1].setErrorMessage('Invalid input format. Please enter decimal values separated by commas.')
         return
     
-
     def execute(self, parameters, messages):
         """The source code of the tool."""
         arcpy.AddMessage("Starting execution")
@@ -166,7 +168,7 @@ class MultiScaleDL(object):
         arcpy.AddMessage("Clearing CUDA cache...")
         torch.cuda.empty_cache()
         arcpy.AddMessage("CUDA cache cleared.")
-        
+
         # Check if in_raster is a URL
         if in_raster.startswith('http'):
             # Get a token from the active portal
@@ -362,7 +364,7 @@ class MultiScaleDL(object):
                 arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=buildings_output, method="RIGHT_ANGLES", tolerance=tolerance)
                 output_paths.append(buildings_output)
                 arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
-
+                torch.cuda.empty_cache()
             # Merge
             arcpy.AddMessage("Running Merge...")
             merge_output = f"{arcpy.env.workspace}\\{out_fc_name}_{int(float(cell_size)*100)}"
