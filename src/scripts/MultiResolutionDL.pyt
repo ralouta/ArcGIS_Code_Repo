@@ -27,6 +27,8 @@ import re
 import torch
 import os
 
+from statistics import mean
+
 
 class Toolbox(object):
     def __init__(self):
@@ -59,6 +61,16 @@ class MultiScaleDL(object):
                                 datatype="GPString",
                                 parameterType="Required",
                                 direction="Input"),
+                arcpy.Parameter(displayName="Use Average Cell Size",
+                                name="use_avg_cell_size",
+                                datatype="GPBoolean",
+                                parameterType="Optional",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Specified Cell Size",
+                                name="specified_cell_size",
+                                datatype="GPDouble",
+                                parameterType="Required",
+                                direction="Input"),
                 arcpy.Parameter(displayName="Model Definition",
                                 name="in_model_definition",
                                 datatype="DEFile",
@@ -71,6 +83,11 @@ class MultiScaleDL(object):
                                 direction="Input"),
                 arcpy.Parameter(displayName="Output Feature Class Name",
                                 name="out_fc_name",
+                                datatype="GPString",
+                                parameterType="Required",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Text Prompt",
+                                name="text_prompt",
                                 datatype="GPString",
                                 parameterType="Required",
                                 direction="Input"),
@@ -98,6 +115,11 @@ class MultiScaleDL(object):
                                 name="processing_extent",
                                 datatype="GPExtent",
                                 parameterType="Optional",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Processing Mask",
+                                name="processing_mask",
+                                datatype="DEFeatureClass",
+                                parameterType="Optional",
                                 direction="Input")]
                 
 
@@ -105,15 +127,20 @@ class MultiScaleDL(object):
         params[2].filter.list = ['dlpk']
 
         # Set the default value for the "Output Geodatabase" parameter to the ArcGIS Pro default geodatabase
-        params[3].value = arcpy.env.workspace
+        params[5].value = arcpy.env.workspace
+
+        # Set the enabled property of parameters[5] to False
+        params[7].enabled = False
+        params[7].value = ""
 
         # Set a filter to only accept "CPU" or "GPU" for the "Processor Type" parameter
-        params[7].filter.type = "ValueList"
-        params[7].filter.list = ["CPU", "GPU"]
+        params[10].filter.type = "ValueList"
+        params[10].filter.list = ["CPU", "GPU"]
 
         # Set the default value for processor type to GPU and the "GPU ID" parameter to 0
-        params[7].value = "GPU"
-        params[8].value = 0
+        params[10].value = "GPU"
+        params[11].value = 0
+        
 
         return params
     def isLicensed(self):
@@ -129,6 +156,20 @@ class MultiScaleDL(object):
             pattern = r'^(\d+(\.\d+)?,)*\d+(\.\d+)?$'
             if not re.match(pattern, parameters[1].valueAsText):
                 parameters[1].setErrorMessage('Invalid input format. Please enter decimal values separated by commas.')
+        
+        # Make the text_prompt parameter only visible if "sam" is in params[2].value.lower()
+        if parameters[4].value:
+            if 'sam' in parameters[4].valueAsText.lower():
+                parameters[7].enabled = True
+                parameters[9].enabled = False
+            else:
+                parameters[7].enabled = False
+                parameters[9].enabled = True
+
+        if parameters[2].value:
+            parameters[3].enabled = False
+        else:
+            parameters[3].enabled = True
         return
 
     
@@ -145,22 +186,35 @@ class MultiScaleDL(object):
         
         # Set overwrite output to True
         arcpy.env.overwriteOutput = True
-
         
         
         in_raster = parameters[0].valueAsText
         cell_sizes = parameters[1].valueAsText
-        in_model_definition = parameters[2].valueAsText
-        out_gdb = parameters[3].valueAsText
-        out_fc_name = parameters[4].valueAsText
-        batch_size = parameters[5].valueAsText
-        threshold = parameters[6].valueAsText
-        processor_type = parameters[7].valueAsText
-        gpu_id = parameters[8].valueAsText
-        processing_extent = parameters[9].valueAsText
+        use_avg_cell_size = parameters[2].value
+        specified_cell_size = parameters[3].value
+        in_model_definition = parameters[4].valueAsText
+        out_gdb = parameters[5].valueAsText
+        out_fc_name = parameters[6].valueAsText
+        text_prompt = parameters[7].valueAsText
+        batch_size = parameters[8].valueAsText
+        threshold = parameters[9].valueAsText
+        processor_type = parameters[10].valueAsText
+        gpu_id = parameters[11].valueAsText
+        processing_extent = parameters[12].valueAsText
+        processing_mask = parameters[13].valueAsText
 
         cell_sizes = cell_sizes.split(',')
         
+        # Convert strings to floats
+        cell_sizes = [float(size) for size in cell_sizes]
+
+        
+        # Calculate the mean
+        if use_avg_cell_size:
+            chozen_cell_size = mean(cell_sizes)
+        else:
+            chozen_cell_size = specified_cell_size
+
         # Set the GPU ID
         arcpy.env.gpuId = gpu_id
 
@@ -209,21 +263,25 @@ class MultiScaleDL(object):
 
         for cell_size in cell_sizes:
             arcpy.AddMessage(f"Processing cell size: {cell_size}")
-            with arcpy.EnvManager(cellSize=float(cell_size), scratchWorkspace=r"", processorType=processor_type, extent=processing_extent):
+            with arcpy.EnvManager(cellSize=cell_size, scratchWorkspace=r"", mask=processing_mask, processorType=processor_type, extent=processing_extent):
                 arcpy.AddMessage("Detecting objects using deep learning...")
                 out_fc = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_raw")
+                
+                if 'building' in in_model_definition.lower():
+                    arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
+                elif 'sam' in in_model_definition.lower():
+                    arguments = f"text_prompt '{text_prompt}';padding 128;batch_size {batch_size};box_threshold 0,1;text_threshold 0,05;box_nms_thresh 0,7;tile_size 512"
                 arcpy.ia.DetectObjectsUsingDeepLearning(
                     in_raster=in_raster,
                     out_detected_objects=out_fc,
                     in_model_definition=in_model_definition,
-                    arguments=f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512",
+                    arguments=arguments,
                     run_nms="NO_NMS",
                     confidence_score_field="Confidence",
                     class_value_field="Class",
                     max_overlap_ratio=0,
                     processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
                 )
-
                 arcpy.AddMessage("Objects detected.")
 
                 # Add the output to the map
@@ -402,14 +460,14 @@ class MultiScaleDL(object):
         final_layer = f"{arcpy.env.workspace }\\{out_fc_name}"
         arcpy.AddMessage("Creating final layer...")
 
-        # Choose the building output that has the closest cell size to 40cm
-        closest_building_output = min(buildings_outputs, key=lambda x: abs((float(x.split('_')[-1])/100) - 0.4))
+        # Choose the building output that has the closest cell size to the average cell size.
+        closest_building_output = min(buildings_outputs, key=lambda x: abs((float(x.split('_')[-1])/100) - chozen_cell_size))
 
         arcpy.CopyFeatures_management(closest_building_output, final_layer)
         arcpy.AddMessage("Final layer created.")
 
         # Sort the buildings_outputs based on their cell sizes
-        buildings_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - 0.4))
+        buildings_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
 
         for buildings_output in buildings_outputs:
             if buildings_output != closest_building_output:
