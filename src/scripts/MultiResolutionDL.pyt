@@ -124,7 +124,7 @@ class MultiScaleDL(object):
                 
 
         # Set a filter to only accept .dlpk files for the "Model Definition" parameter
-        params[2].filter.list = ['dlpk']
+        params[4].filter.list = ['dlpk']
 
         # Set the default value for the "Output Geodatabase" parameter to the ArcGIS Pro default geodatabase
         params[5].value = arcpy.env.workspace
@@ -366,7 +366,7 @@ class MultiScaleDL(object):
                     # Get the value of the Shape_Area field
                     shape_area = row[cursor.fields.index("Shape_Area")]
                     # Check the value and add the row to the appropriate list
-                    if 6 < shape_area <= 50:
+                    if 12 < shape_area <= 50:
                         rows_1.append(row)
                     elif 50 < shape_area <= 200:
                         rows_2.append(row)
@@ -376,6 +376,7 @@ class MultiScaleDL(object):
                         rows_4.append(row)
                     elif 1000 <= shape_area < 4500:
                         rows_5.append(row)
+            del cursor
 
             # Start an edit session
             editor = arcpy.da.Editor(arcpy.env.workspace)
@@ -472,7 +473,7 @@ class MultiScaleDL(object):
             # Check if the area is greater than 750 square meters
             if row[0] > 750:
                 # Delete the feature
-                cursor.deleteRow()
+                delete_areas_less_750_cursor.deleteRow()
 
         # Sort the buildings_outputs based on their cell sizes
         buildings_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
