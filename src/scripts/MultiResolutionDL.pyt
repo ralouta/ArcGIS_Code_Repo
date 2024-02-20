@@ -465,6 +465,14 @@ class MultiScaleDL(object):
 
         arcpy.CopyFeatures_management(closest_building_output, final_layer)
         arcpy.AddMessage("Final layer created.")
+        
+        # Use an update cursor to delete features
+        delete_areas_less_750_cursor = arcpy.da.UpdateCursor(final_layer, 'SHAPE@AREA@')
+        for row in delete_areas_less_750_cursor:
+            # Check if the area is greater than 750 square meters
+            if row[0] > 750:
+                # Delete the feature
+                cursor.deleteRow()
 
         # Sort the buildings_outputs based on their cell sizes
         buildings_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
