@@ -312,7 +312,7 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Deleting rows with areas < 4 and area > 4500...")
             with arcpy.da.UpdateCursor(out_fc, "SHAPE@AREA") as cursor:
                 for row in cursor:
-                    if row[0] < min_area and row[0] > max_area:
+                    if row[0] is None or row[0]< min_area or row[0] > max_area:
                         cursor.deleteRow()
             del cursor
             arcpy.AddMessage("Rows deleted.")
