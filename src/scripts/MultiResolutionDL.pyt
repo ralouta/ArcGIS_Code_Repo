@@ -350,6 +350,7 @@ class MultiScaleDL(object):
             output_path_3 = arcpy.env.workspace + "\\temp_select_layer_3"
             output_path_4 = arcpy.env.workspace + "\\temp_select_layer_4"
             output_path_5 = arcpy.env.workspace + "\\temp_select_layer_5"
+            output_path_6 = arcpy.env.workspace + "\\temp_select_layer_6"
 
             # Create new feature classes for the output
             arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_1", template=pairwise_dissolve_output_2)
@@ -357,6 +358,7 @@ class MultiScaleDL(object):
             arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_3", template=pairwise_dissolve_output_2)
             arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_4", template=pairwise_dissolve_output_2)
             arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_5", template=pairwise_dissolve_output_2)
+            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_6", template=pairwise_dissolve_output_2)
 
             # Get a list of field names from the input feature class
             field_names = [field.name for field in arcpy.ListFields(pairwise_dissolve_output_2)]
@@ -370,6 +372,7 @@ class MultiScaleDL(object):
             rows_3 = []
             rows_4 = []
             rows_5 = []
+            rows_6 = []
 
             # Open a search cursor for the input feature class
             with arcpy.da.SearchCursor(pairwise_dissolve_output_2, field_names) as cursor:
@@ -387,6 +390,8 @@ class MultiScaleDL(object):
                         rows_4.append(row)
                     elif 1000 <= shape_area < 4500:
                         rows_5.append(row)
+                    elif shape_area >= 4500:
+                        rows_6.append(row)
             del cursor
 
             # Start an edit session
@@ -414,16 +419,20 @@ class MultiScaleDL(object):
             cursor_5 = arcpy.da.InsertCursor(output_path_5, field_names)
             for row in rows_5:
                 cursor_5.insertRow(row)
+            
+            cursor_6 = arcpy.da.InsertCursor(output_path_6, field_names)
+            for row in rows_6:
+                cursor_6.insertRow(row)
 
             # Stop the edit operation and stop the editing session
             editor.stopOperation()
             editor.stopEditing(True)
 
             # Define the tolerances
-            tolerances = [0.5, 1, 1.5, 2.5, 5]
+            tolerances = [0.5, 1, 1.5, 2.5, 3.5, 5]
 
             # Define the output paths
-            output_paths = [output_path_1, output_path_2, output_path_3, output_path_4, output_path_5]
+            output_paths = [output_path_1, output_path_2, output_path_3, output_path_4, output_path_5, output_path_6]
             
             # Run the RegularizeBuildingFootprint function for each tolerance
             for tolerance, output_path in zip(tolerances, output_paths):
