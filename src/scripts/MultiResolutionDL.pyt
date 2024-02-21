@@ -120,6 +120,16 @@ class MultiScaleDL(object):
                                 name="processing_mask",
                                 datatype="DEFeatureClass",
                                 parameterType="Optional",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Minimum Area",
+                                name="min_area",
+                                datatype="GPLong",
+                                parameterType="Optional",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Maximum Area", 
+                                name="max_area",
+                                datatype="GPLong",
+                                parameterType="Optional",
                                 direction="Input")]
                 
 
@@ -140,7 +150,8 @@ class MultiScaleDL(object):
         # Set the default value for processor type to GPU and the "GPU ID" parameter to 0
         params[10].value = "GPU"
         params[11].value = 0
-        
+        params[14].value = 4.0
+        params[15].value = 4500.0
 
         return params
     def isLicensed(self):
@@ -202,6 +213,8 @@ class MultiScaleDL(object):
         gpu_id = parameters[11].valueAsText
         processing_extent = parameters[12].valueAsText
         processing_mask = parameters[13].valueAsText
+        min_area = parameters[14].value
+        max_area = parameters[15].value
 
         cell_sizes = cell_sizes.split(',')
         
@@ -289,20 +302,20 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Clearing CUDA cache...")
             torch.cuda.empty_cache()
             arcpy.AddMessage("CUDA cache cleared.")
+             
+             # Repair geometry
+            arcpy.AddMessage("Repairing geometry...")
+            arcpy.RepairGeometry_management(out_fc)
+            arcpy.AddMessage("Geometry repaired.")
 
             # Delete rows with area > 4500
             arcpy.AddMessage("Deleting rows with areas < 4 and area > 4500...")
             with arcpy.da.UpdateCursor(out_fc, "SHAPE@AREA") as cursor:
                 for row in cursor:
-                    if row[0] < 4 and row[0] > 4500:
+                    if row[0] < min_area and row[0] > max_area:
                         cursor.deleteRow()
             del cursor
             arcpy.AddMessage("Rows deleted.")
-            
-            # Repair geometry
-            arcpy.AddMessage("Repairing geometry...")
-            arcpy.RepairGeometry_management(out_fc)
-            arcpy.AddMessage("Geometry repaired.")
 
             # Pairwise Buffer
             arcpy.AddMessage("Running Pairwise Buffer...")
