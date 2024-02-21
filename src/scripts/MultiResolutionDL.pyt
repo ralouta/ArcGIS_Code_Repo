@@ -284,27 +284,25 @@ class MultiScaleDL(object):
                 )
                 arcpy.AddMessage("Objects detected.")
 
-                # Add the output to the map
-                arcpy.addOutputsToMap = True
 
             # Clear the CUDA cache
             arcpy.AddMessage("Clearing CUDA cache...")
             torch.cuda.empty_cache()
             arcpy.AddMessage("CUDA cache cleared.")
 
+            # Delete rows with area > 4500
+            arcpy.AddMessage("Deleting rows with areas < 4 and area > 4500...")
+            with arcpy.da.UpdateCursor(out_fc, "SHAPE@AREA") as cursor:
+                for row in cursor:
+                    if row[0] < 4 and row[0] > 4500:
+                        cursor.deleteRow()
+            del cursor
+            arcpy.AddMessage("Rows deleted.")
+            
             # Repair geometry
             arcpy.AddMessage("Repairing geometry...")
             arcpy.RepairGeometry_management(out_fc)
             arcpy.AddMessage("Geometry repaired.")
-
-            # Delete rows with area > 4500
-            arcpy.AddMessage("Deleting rows with area > 4500...")
-            with arcpy.da.UpdateCursor(out_fc, "SHAPE@AREA") as cursor:
-                for row in cursor:
-                    if row[0] > 4500:
-                        cursor.deleteRow()
-            del cursor
-            arcpy.AddMessage("Rows deleted.")
 
             # Pairwise Buffer
             arcpy.AddMessage("Running Pairwise Buffer...")
@@ -366,7 +364,7 @@ class MultiScaleDL(object):
                     # Get the value of the Shape_Area field
                     shape_area = row[cursor.fields.index("Shape_Area")]
                     # Check the value and add the row to the appropriate list
-                    if 12 < shape_area <= 50:
+                    if 6 < shape_area <= 50:
                         rows_1.append(row)
                     elif 50 < shape_area <= 200:
                         rows_2.append(row)
@@ -420,6 +418,10 @@ class MultiScaleDL(object):
                 tolerance_cm = int(tolerance * 100)
                 buildings_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
                 arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance}...")
+                # Check if buildings_output exists
+                if arcpy.Exists(buildings_output):
+                    # If it exists, delete it
+                    arcpy.Delete_management(buildings_output)
                 arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=buildings_output, method="RIGHT_ANGLES", tolerance=tolerance)
                 output_paths.append(buildings_output)
                 arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
