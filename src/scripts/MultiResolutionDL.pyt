@@ -295,8 +295,6 @@ class MultiScaleDL(object):
                     max_overlap_ratio=0,
                     processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
                 )
-                arcpy.AddMessage("Objects detected.")
-
 
             # Clear the CUDA cache
             arcpy.AddMessage("Clearing CUDA cache...")
@@ -440,10 +438,6 @@ class MultiScaleDL(object):
                 tolerance_cm = int(tolerance * 100)
                 buildings_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
                 arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance}...")
-                # Check if buildings_output exists
-                if arcpy.Exists(buildings_output):
-                    # If it exists, delete it
-                    arcpy.Delete_management(buildings_output)
                 arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=buildings_output, method="RIGHT_ANGLES", tolerance=tolerance)
                 output_paths.append(buildings_output)
                 arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
