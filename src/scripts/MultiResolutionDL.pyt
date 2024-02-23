@@ -53,7 +53,7 @@ class MultiScaleDL(object):
         # Define parameters for the tool
         params = [arcpy.Parameter(displayName="Input Raster",
                                 name="in_raster",
-                                datatype=["DEMapServer", "GPRasterDataLayer"],
+                                datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset"],
                                 parameterType="Required",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Cell Sizes",
@@ -99,7 +99,7 @@ class MultiScaleDL(object):
                 arcpy.Parameter(displayName="Threshold",
                                 name="threshold",
                                 datatype="GPDouble",
-                                parameterType="Required",
+                                parameterType="Optional",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Processor Type",
                                 name="processor_type",
@@ -143,6 +143,8 @@ class MultiScaleDL(object):
         params[7].enabled = False
         params[7].value = ""
 
+        #set the enabled property of parameters[9] to False
+        params[9].value = 0.65
         # Set a filter to only accept "CPU" or "GPU" for the "Processor Type" parameter
         params[10].filter.type = "ValueList"
         params[10].filter.list = ["CPU", "GPU"]
