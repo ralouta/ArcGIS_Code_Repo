@@ -130,11 +130,6 @@ class MultiScaleDL(object):
                                 name="max_area",
                                 datatype="GPLong",
                                 parameterType="Optional",
-                                direction="Input"),
-                arcpy.Parameter(displayName="Regularize or Generalize the output feature", 
-                                name="regularize_or_generalize",
-                                datatype="GPString",
-                                parameterType="Required",
                                 direction="Input")]
                 
 
@@ -160,10 +155,6 @@ class MultiScaleDL(object):
         params[11].value = 0
         params[14].value = 4.0
         params[15].value = 4500.0
-
-        # Set a filter to only accept "Regularize" or "Generalize" for the "Regularize or Generalize the output feature" parameter
-        params[16].filter.type = "ValueList"
-        params[16].filter.list = ["Regularize", "Generalize"]
 
         return params
     def isLicensed(self):
@@ -227,7 +218,6 @@ class MultiScaleDL(object):
         processing_mask = parameters[13].valueAsText
         min_area = parameters[14].value
         max_area = parameters[15].value
-        regularize_or_generalize = parameters[16].valueAsText
 
         cell_sizes = cell_sizes.split(',')
         
@@ -285,7 +275,7 @@ class MultiScaleDL(object):
         arcpy.SetProgressor("step", "Running 'Detect Objects Using Deep Learning'...", 0, num_runs, 1)
 
         # List to store building outputs. Will be used to process final buildings layer
-        features_outputs = []
+        buildings_outputs = []
 
         for cell_size in cell_sizes:
             arcpy.AddMessage(f"Processing cell size: {cell_size}")
@@ -296,11 +286,7 @@ class MultiScaleDL(object):
                 if 'building' in in_model_definition.lower():
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
                 elif 'sam' in in_model_definition.lower():
-<<<<<<< HEAD
                     arguments = f"text_prompt '{text_prompt}';padding 256;batch_size {batch_size};box_threshold 0.2;text_threshold 0.05;box_nms_thresh 0.7"
-=======
-                    arguments = f"text_prompt {text_prompt};padding 256;batch_size {batch_size};box_threshold 0.2;text_threshold 0.05;box_nms_thresh 0.7"                
->>>>>>> dev
                 arcpy.ia.DetectObjectsUsingDeepLearning(
                     in_raster=in_raster,
                     out_detected_objects=out_fc,
@@ -451,31 +437,20 @@ class MultiScaleDL(object):
             
             # Run the RegularizeBuildingFootprint function for each tolerance
             for tolerance, output_path in zip(tolerances, output_paths):
-                if regularize_or_generalize == "Regularize":
-                    arcpy.AddMessage(f"Running Regularizing Building Footprints with tolerance {tolerance}...")
-                    tolerance_cm = int(tolerance * 100)
-                    features_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
-                    arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance}...")
-                    arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=features_output, method="RIGHT_ANGLES", tolerance=tolerance)
-                    output_paths.append(features_output)
-                    arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
-                    torch.cuda.empty_cache()
-                else:
-                    arcpy.AddMessage(f"Running Generalizing Building Footprints with tolerance {tolerance}...")
-                    tolerance_cm = int(tolerance * 100)
-                    features_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
-                    arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance}...")
-                    arcpy.management.CopyFeatures(output_path, features_output)
-                    arcpy.edit.Generalize(in_features=features_output,tolerance=tolerance)
-                    output_paths.append(features_output)
-                    arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance} completed.")
-                    torch.cuda.empty_cache()
+                arcpy.AddMessage(f"Running Regularizing Building Footprints with tolerance {tolerance}...")
+                tolerance_cm = int(tolerance * 100)
+                buildings_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
+                arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance}...")
+                arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=buildings_output, method="RIGHT_ANGLES", tolerance=tolerance)
+                output_paths.append(buildings_output)
+                arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
+                torch.cuda.empty_cache()
             # Merge
             arcpy.AddMessage("Running Merge...")
             merge_output = f"{arcpy.env.workspace}\\{out_fc_name}_{int(float(cell_size)*100)}"
             arcpy.management.Merge(inputs=[f"{arcpy.env.workspace }\\Buildings_{int(tolerance * 100)}cm" for tolerance in tolerances], output=merge_output)
             
-            features_outputs.append(merge_output)
+            buildings_outputs.append(merge_output)
 
             arcpy.AddMessage("Merge completed.")
 
@@ -500,7 +475,7 @@ class MultiScaleDL(object):
             arcpy.SetProgressorPosition()
         
         # Get a list of field names from the first input feature class
-        field_names = [field.name for field in arcpy.ListFields(features_outputs[0])]
+        field_names = [field.name for field in arcpy.ListFields(buildings_outputs[0])]
         field_names.append('SHAPE@JSON')
 
         # Copy the 40cm output cell size as the base final layer
@@ -508,7 +483,7 @@ class MultiScaleDL(object):
         arcpy.AddMessage("Creating final layer...")
 
         # Choose the building output that has the closest cell size to the average cell size.
-        closest_building_output = min(features_outputs, key=lambda x: abs((float(x.split('_')[-1])/100) - chozen_cell_size))
+        closest_building_output = min(buildings_outputs, key=lambda x: abs((float(x.split('_')[-1])/100) - chozen_cell_size))
 
         arcpy.CopyFeatures_management(closest_building_output, final_layer)
         arcpy.AddMessage("Final layer created.")
@@ -521,18 +496,18 @@ class MultiScaleDL(object):
                 # Delete the feature
                 delete_areas_less_750_cursor.deleteRow()
 
-        # Sort the features_outputs based on their cell sizes
-        features_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
+        # Sort the buildings_outputs based on their cell sizes
+        buildings_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
 
-        for features_output in features_outputs:
-            if features_output != closest_building_output:
-                source_fc_name = features_output.split("\\")[-1]
+        for buildings_output in buildings_outputs:
+            if buildings_output != closest_building_output:
+                source_fc_name = buildings_output.split("\\")[-1]
                 arcpy.AddMessage(f"Processing {source_fc_name}...")
 
                 # Perform pairwise intersection between the base layer and the current output
                 intersect_output = f"{arcpy.env.workspace }\\intersect_output"
                 arcpy.analysis.PairwiseIntersect(
-                    in_features=[final_layer, features_output],
+                    in_features=[final_layer, buildings_output],
                     out_feature_class= intersect_output,
                     join_attributes="ALL",
                     cluster_tolerance=None,
@@ -549,7 +524,7 @@ class MultiScaleDL(object):
                 del intersect_search_cursor
 
                 # Open a search cursor for the current output
-                source_features_cursor = arcpy.da.SearchCursor(features_output, field_names)
+                source_features_cursor = arcpy.da.SearchCursor(buildings_output, field_names)
 
                 features_to_insert = []
 
