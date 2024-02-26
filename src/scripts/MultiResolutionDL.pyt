@@ -143,8 +143,9 @@ class MultiScaleDL(object):
         params[7].enabled = False
         params[7].value = ""
 
-        #set the enabled property of parameters[9] to False
+        #set the value of the "Threshold" parameter to 0.65
         params[9].value = 0.65
+        
         # Set a filter to only accept "CPU" or "GPU" for the "Processor Type" parameter
         params[10].filter.type = "ValueList"
         params[10].filter.list = ["CPU", "GPU"]
@@ -285,7 +286,7 @@ class MultiScaleDL(object):
                 if 'building' in in_model_definition.lower():
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
                 elif 'sam' in in_model_definition.lower():
-                    arguments = f"text_prompt '{text_prompt}';padding 128;batch_size {batch_size};box_threshold 0,1;text_threshold 0,05;box_nms_thresh 0,7;tile_size 512"
+                    arguments = f"text_prompt '{text_prompt}';padding 256;batch_size {batch_size};box_threshold 0.2;text_threshold 0.05;box_nms_thresh 0.7"
                 arcpy.ia.DetectObjectsUsingDeepLearning(
                     in_raster=in_raster,
                     out_detected_objects=out_fc,
