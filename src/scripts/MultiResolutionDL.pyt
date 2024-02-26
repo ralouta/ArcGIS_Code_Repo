@@ -492,8 +492,7 @@ class MultiScaleDL(object):
                     torch.cuda.empty_cache()
             # Delete temporary outputs
             arcpy.AddMessage("Deleting temporary outputs...")
-            for output_path in output_paths:
-                arcpy.Delete_management(output_path)
+            
             arcpy.Delete_management(pairwise_buffer_output)
             arcpy.Delete_management(spatial_join_output)
             arcpy.Delete_management(pairwise_buffer_output)
@@ -504,8 +503,10 @@ class MultiScaleDL(object):
 
             # Merge
             arcpy.AddMessage("Running Merge...")
-            arcpy.management.Merge(inputs=[f"{arcpy.env.workspace }\\Buildings_{int(tolerance * 100)}cm" for tolerance in tolerances], output=merge_output)
+            arcpy.management.Merge(inputs=[output_path for output_path in output_paths], output=merge_output)
             
+            for output_path in output_paths:
+                arcpy.Delete_management(output_path)
         features_outputs.append(merge_output)
         
         arcpy.AddMessage("Merge completed.")
