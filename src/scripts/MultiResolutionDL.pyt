@@ -509,7 +509,7 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Merge completed.")
             for output_path in output_paths:
                 arcpy.Delete_management(output_path)
-        features_outputs.append(merge_output)
+            features_outputs.append(merge_output)
         
 
             # Clear the CUDA cache
