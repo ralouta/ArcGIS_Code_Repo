@@ -302,17 +302,18 @@ class MultiScaleDL(object):
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
                 elif 'sam' in in_model_definition.lower():
                     arguments = f"text_prompt '{text_prompt}';padding 256;batch_size {batch_size};box_threshold 0.2;text_threshold 0.05;box_nms_thresh 0.7"
-                arcpy.ia.DetectObjectsUsingDeepLearning(
-                    in_raster=in_raster,
-                    out_detected_objects=out_fc,
-                    in_model_definition=in_model_definition,
-                    arguments=arguments,
-                    run_nms="NO_NMS",
-                    confidence_score_field="Confidence",
-                    class_value_field="Class",
-                    max_overlap_ratio=0,
-                    processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                )
+                if not arcpy.Exists(out_fc):
+                    arcpy.ia.DetectObjectsUsingDeepLearning(
+                        in_raster=in_raster,
+                        out_detected_objects=out_fc,
+                        in_model_definition=in_model_definition,
+                        arguments=arguments,
+                        run_nms="NO_NMS",
+                        confidence_score_field="Confidence",
+                        class_value_field="Class",
+                        max_overlap_ratio=0,
+                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
+                    )
 
             # Clear the CUDA cache
             arcpy.AddMessage("Clearing CUDA cache...")
@@ -505,11 +506,11 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Running Merge...")
             arcpy.management.Merge(inputs=[output_path for output_path in output_paths], output=merge_output)
             
+            arcpy.AddMessage("Merge completed.")
             for output_path in output_paths:
                 arcpy.Delete_management(output_path)
         features_outputs.append(merge_output)
         
-        arcpy.AddMessage("Merge completed.")
 
             # Clear the CUDA cache
         arcpy.AddMessage("Clearing CUDA cache...")
@@ -587,7 +588,7 @@ class MultiScaleDL(object):
         # Sort the features_outputs based on their cell sizes
         features_outputs.sort(key=lambda x: abs(float(x.split('_')[-1]) - chozen_cell_size))
 
-
+        arcpy.AddMessage(f"Processing the final {features_outputs}...")
         for features_output in features_outputs:
             if features_output != closest_building_output:
                 source_fc_name = features_output.split("\\")[-1]
