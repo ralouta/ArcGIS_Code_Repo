@@ -330,18 +330,18 @@ class MultiScaleDL(object):
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
                 elif 'sam' in in_model_definition.lower():
                     arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
-                if not arcpy.Exists(out_fc):
-                    arcpy.ia.DetectObjectsUsingDeepLearning(
-                        in_raster=in_raster,
-                        out_detected_objects=out_fc,
-                        in_model_definition=in_model_definition,
-                        arguments=arguments,
-                        run_nms="NO_NMS",
-                        confidence_score_field="Confidence",
-                        class_value_field="Class",
-                        max_overlap_ratio=0,
-                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                    )
+                # if not arcpy.Exists(out_fc):
+                arcpy.ia.DetectObjectsUsingDeepLearning(
+                    in_raster=in_raster,
+                    out_detected_objects=out_fc,
+                    in_model_definition=in_model_definition,
+                    arguments=arguments,
+                    run_nms="NO_NMS",
+                    confidence_score_field="Confidence",
+                    class_value_field="Class",
+                    max_overlap_ratio=0,
+                    processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
+                )
 
             # Clear the CUDA cache
             arcpy.AddMessage("Clearing CUDA cache...")
