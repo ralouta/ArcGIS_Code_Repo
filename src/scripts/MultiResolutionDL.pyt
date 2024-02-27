@@ -27,9 +27,35 @@ import re
 import torch
 import os
 
-from statistics import mean
 import statistics
 
+import math
+
+import json
+
+
+
+def bounding_box_to_circle(input_feature_class, output_buffer_feature_class):
+        # Step 1: Add a new field "Radius" to the input feature class
+        arcpy.management.AddField(input_feature_class, "Radius", "DOUBLE")
+
+        # Use an UpdateCursor to calculate the radius for each feature
+        with arcpy.da.UpdateCursor(input_feature_class, ["SHAPE@AREA", "Radius"]) as cursor:
+            for row in cursor:
+                # Calculate the radius from the area
+                radius = math.sqrt(row[0] / math.pi)
+                # Update the Radius field
+                row[1] = radius
+                cursor.updateRow(row)
+        # Step 3: Use FeatureToPoint to convert the updated input feature class to a temporary point feature class
+        temp_point_feature_class = "temp_point_feature"
+        arcpy.management.FeatureToPoint(input_feature_class, temp_point_feature_class, "INSIDE")
+
+        # Step 4: Use Buffer to create the final output buffer based on the "Radius" field
+        arcpy.analysis.Buffer(temp_point_feature_class, output_buffer_feature_class, "Radius")
+
+        # Optional: Delete the temporary point feature class
+        arcpy.management.Delete(temp_point_feature_class)
 
 class Toolbox(object):
     def __init__(self):
@@ -164,7 +190,7 @@ class MultiScaleDL(object):
 
         # Set the filter for the "Regularize or Generalize the output feature" parameter
         params[16].filter.type = "ValueList"
-        params[16].filter.list = ["Regularize", "Generalize"]
+        params[16].filter.list = ["Regularize Right Angle", "Regularize Circle", "Generalize"]
 
         return params
     def isLicensed(self):
@@ -231,7 +257,9 @@ class MultiScaleDL(object):
         regularize_generalize = parameters[16].valueAsText
 
         # Define the tolerances
-        tolerances = [0.5, 1, 1.5, 2.5, 3.5, 5]
+        tolerances = {"Regularize Right Angle":[[0.5, 1, 1.5, 2.5, 3.5, 5],[(1, 50), (50, 200), (200, 500), (500, 1000), (1000, 4500), (4500, float('inf'))]],
+                    "Regularize Circle":[[1],[(min_area, max_area)]],
+                    "Generalize":[0.5, 1, 1.5, 2.5, 3.5, 5]}
 
         cell_sizes = cell_sizes.split(',')
         
@@ -241,7 +269,7 @@ class MultiScaleDL(object):
         
         # Calculate the mean
         if use_avg_cell_size:
-            chozen_cell_size = mean(cell_sizes)
+            chozen_cell_size = statistics.mean(cell_sizes)
         else:
             chozen_cell_size = specified_cell_size
 
@@ -301,7 +329,7 @@ class MultiScaleDL(object):
                 if 'building' in in_model_definition.lower():
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
                 elif 'sam' in in_model_definition.lower():
-                    arguments = f"text_prompt '{text_prompt}';padding 256;batch_size {batch_size};box_threshold 0.2;text_threshold 0.05;box_nms_thresh 0.7"
+                    arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
                 if not arcpy.Exists(out_fc):
                     arcpy.ia.DetectObjectsUsingDeepLearning(
                         in_raster=in_raster,
@@ -336,9 +364,12 @@ class MultiScaleDL(object):
 
             # Pairwise Buffer
             arcpy.AddMessage("Running Pairwise Buffer...")
-            pairwise_buffer_output = arcpy.env.workspace + "\\temp_buffer_negative_30cm"          
-            arcpy.analysis.PairwiseBuffer(in_features=out_fc, out_feature_class=pairwise_buffer_output, buffer_distance_or_field="-30 Centimeters")
-            arcpy.AddMessage("Pairwise Buffer completed.")
+            if regularize_generalize == "Regularize Right Angle" or regularize_generalize == "Generalize":
+                buffer_distance = "30"
+            else:
+                buffer_distance = "50"
+            pairwise_buffer_output = arcpy.env.workspace + f"\\temp_buffer_negative_{buffer_distance}cm"          
+            arcpy.analysis.PairwiseBuffer(in_features=out_fc, out_feature_class=pairwise_buffer_output, buffer_distance_or_field=f"-{buffer_distance} Centimeters")
 
             # Pairwise Dissolve
             arcpy.AddMessage("Running Pairwise Dissolve...")
@@ -362,34 +393,21 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Running building classification by area...")
 
             # Define the output paths
-            output_path_1 = arcpy.env.workspace + "\\temp_select_layer_1"
-            output_path_2 = arcpy.env.workspace + "\\temp_select_layer_2"
-            output_path_3 = arcpy.env.workspace + "\\temp_select_layer_3"
-            output_path_4 = arcpy.env.workspace + "\\temp_select_layer_4"
-            output_path_5 = arcpy.env.workspace + "\\temp_select_layer_5"
-            output_path_6 = arcpy.env.workspace + "\\temp_select_layer_6"
+            output_paths = [f"{arcpy.env.workspace}\\temp_select_layer_{int(tolerance*100)}" for tolerance in tolerances[regularize_generalize][0]]
+
 
             # Create new feature classes for the output
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_1", template=pairwise_dissolve_output_2)
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_2", template=pairwise_dissolve_output_2)
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_3", template=pairwise_dissolve_output_2)
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_4", template=pairwise_dissolve_output_2)
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_5", template=pairwise_dissolve_output_2)
-            arcpy.management.CreateFeatureclass(arcpy.env.workspace, "temp_select_layer_6", template=pairwise_dissolve_output_2)
-
+            for output_path in output_paths:
+                arcpy.management.CreateFeatureclass(arcpy.env.workspace, output_path.split("\\")[-1], template=pairwise_dissolve_output_2)
             # Get a list of field names from the input feature class
             field_names = [field.name for field in arcpy.ListFields(pairwise_dissolve_output_2)]
 
             # Add 'SHAPE@JSON' to the list of field names
             field_names.append('SHAPE@JSON')
+            
+            # Create a list of empty lists based on the count of tolerances
+            rows = [[] for _ in tolerances[regularize_generalize][0]]
 
-            # Create lists to store the rows
-            rows_1 = []
-            rows_2 = []
-            rows_3 = []
-            rows_4 = []
-            rows_5 = []
-            rows_6 = []
 
             # Open a search cursor for the input feature class
             with arcpy.da.SearchCursor(pairwise_dissolve_output_2, field_names) as cursor:
@@ -397,72 +415,44 @@ class MultiScaleDL(object):
                     # Get the value of the Shape_Area field
                     shape_area = row[cursor.fields.index("Shape_Area")]
                     # Check the value and add the row to the appropriate list
-                    if 6 < shape_area <= 50:
-                        rows_1.append(row)
-                    elif 50 < shape_area <= 200:
-                        rows_2.append(row)
-                    elif 200 < shape_area <= 500:
-                        rows_3.append(row)
-                    elif 500 < shape_area <= 1000:
-                        rows_4.append(row)
-                    elif 1000 <= shape_area < 4500:
-                        rows_5.append(row)
-                    elif shape_area >= 4500:
-                        rows_6.append(row)
+                    for i, tolerance in enumerate(tolerances[regularize_generalize][1]):
+                        lower, upper = tolerance
+                        if lower < shape_area <= upper:
+                            rows[i].append(row)
+                            break
             del cursor
-
+            
             # Start an edit session
             editor = arcpy.da.Editor(arcpy.env.workspace)
             editor.startEditing(False, True)
             editor.startOperation()
 
             # Open insert cursors for the output feature classes and insert the rows
-            cursor_1 = arcpy.da.InsertCursor(output_path_1, field_names)
-            for row in rows_1:
-                cursor_1.insertRow(row)
-
-            cursor_2 = arcpy.da.InsertCursor(output_path_2, field_names)
-            for row in rows_2:
-                cursor_2.insertRow(row)
-
-            cursor_3 = arcpy.da.InsertCursor(output_path_3, field_names)
-            for row in rows_3:
-                cursor_3.insertRow(row)
-
-            cursor_4 = arcpy.da.InsertCursor(output_path_4, field_names)
-            for row in rows_4:
-                cursor_4.insertRow(row)
-
-            cursor_5 = arcpy.da.InsertCursor(output_path_5, field_names)
-            for row in rows_5:
-                cursor_5.insertRow(row)
-            
-            cursor_6 = arcpy.da.InsertCursor(output_path_6, field_names)
-            for row in rows_6:
-                cursor_6.insertRow(row)
+            for output_path, rows in zip(output_paths, rows):
+                cursor = arcpy.da.InsertCursor(output_path, field_names)
+                for row in rows:
+                    cursor.insertRow(row)
+                del cursor
 
             # Stop the edit operation and stop the editing session
             editor.stopOperation()
             editor.stopEditing(True)
 
-            del cursor_1, cursor_2, cursor_3, cursor_4, cursor_5, cursor_6
+            regularized_outputs = []
 
-            # Define the output paths
-            output_paths = [output_path_1, output_path_2, output_path_3, output_path_4, output_path_5, output_path_6]
-            
             # Run the RegularizeBuildingFootprint function for each tolerance
-            for tolerance, output_path in zip(tolerances, output_paths):
-                if regularize_generalize == "Regularize":
-                    arcpy.AddMessage(f"Running Regularizing Building Footprints with tolerance {tolerance}...")
+            for tolerance, output_path in zip(tolerances[regularize_generalize][0], output_paths):
+                # Set the maximum number of retries
+                max_retries = 5
+
+                # Initialize the number of attempts
+                attempts = 0
+                if regularize_generalize == "Regularize Right Angle":
+                    arcpy.AddMessage(f"Running Regularizing Rectangular Footprints with tolerance {tolerance}...")
                     tolerance_cm = int(tolerance * 100)
-                    regularized_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
-                    arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance}...")
-                    # Set the maximum number of retries
-                    max_retries = 5
-
-                    # Initialize the number of attempts
-                    attempts = 0
-
+                    regularized_output = f"{arcpy.env.workspace}\\rectangle_{tolerance_cm}cm"
+                    arcpy.AddMessage(f"Regularizing Rectangular Footprints with tolerance {tolerance}...")
+                    
                     while attempts < max_retries:
                         try:
                             # Try to regularize the building footprint
@@ -470,17 +460,24 @@ class MultiScaleDL(object):
                                 arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=regularized_output, method="RIGHT_ANGLES", tolerance=tolerance)
                                 break  # If the operation is successful, break the loop
                         except Exception as e:
-                            print(f"An error occurred: {e}")
+                            arcpy.AddMessage(f"An error occurred: {e}/n Cancel the tool and restart ArcGIS Pro.")
                             attempts += 1  # Increase the number of attempts
                             print(f"Retrying ({attempts}/{max_retries})...")
                             time.sleep(5)  # Wait for 5 seconds before retrying
 
-                    output_paths.append(regularized_output)
-                    arcpy.AddMessage(f"Regularizing Building Footprints with tolerance {tolerance} completed.")
+                    regularized_outputs.append(regularized_output)
+                    arcpy.AddMessage(f"Regularizing Rectangular Footprints with tolerance {tolerance} completed.")
                     torch.cuda.empty_cache()
                     
-                        
-
+                elif regularize_generalize == "Regularize Circle":
+                    arcpy.AddMessage(f"Running Regularizing Circular objects with tolerance {tolerance}...")
+                    tolerance_cm = int(tolerance * 100)
+                    regularized_output = f"{arcpy.env.workspace}\\circle_{tolerance_cm}cm"
+                    bounding_box_to_circle(output_path, regularized_output)
+                    regularized_outputs.append(regularized_output)
+                    arcpy.AddMessage(f"Regularizing Circular objects with tolerance {tolerance} completed.")
+                    torch.cuda.empty_cache()
+                
                 else:
                     arcpy.AddMessage(f"Running Generalizing Building Footprints with tolerance {tolerance}...")
                     tolerance_cm = int(tolerance * 100)
@@ -488,7 +485,7 @@ class MultiScaleDL(object):
                     arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance}...")
                     arcpy.Copy_management(output_path, generalized_output)
                     arcpy.edit.Generalize(in_features=generalized_output, tolerance=tolerance)
-                    output_paths.append(generalized_output)
+                    regularized_outputs.append(generalized_output)
                     arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance} completed.")
                     torch.cuda.empty_cache()
             # Delete temporary outputs
@@ -500,16 +497,18 @@ class MultiScaleDL(object):
             arcpy.Delete_management(spatial_join_output)
             arcpy.Delete_management(pairwise_dissoolve_output_1)
             arcpy.Delete_management(pairwise_dissolve_output_2)
+            for output_path in output_paths:
+                arcpy.Delete_management(output_path)
+            features_outputs.append(merge_output)
             arcpy.AddMessage("Temporary outputs deleted.")
 
             # Merge
             arcpy.AddMessage("Running Merge...")
-            arcpy.management.Merge(inputs=[output_path for output_path in output_paths], output=merge_output)
-            
+            arcpy.AddMessage(f"Running Merge for {output_paths}...")
+            arcpy.management.Merge(inputs=[processed_output_path for processed_output_path in regularized_outputs], output=merge_output)
+            for regularized_output in regularized_outputs:
+                arcpy.Delete_management(regularized_output)
             arcpy.AddMessage("Merge completed.")
-            for output_path in output_paths:
-                arcpy.Delete_management(output_path)
-            features_outputs.append(merge_output)
         
 
             # Clear the CUDA cache
