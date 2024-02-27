@@ -259,7 +259,7 @@ class MultiScaleDL(object):
         # Define the tolerances
         tolerances = {"Regularize Right Angle":[[0.5, 1, 1.5, 2.5, 3.5, 5],[(1, 50), (50, 200), (200, 500), (500, 1000), (1000, 4500), (4500, float('inf'))]],
                     "Regularize Circle":[[1],[(min_area, max_area)]],
-                    "Generalize":[0.5, 1, 1.5, 2.5, 3.5, 5]}
+                    "Generalize":[[0.5, 1, 1.5, 2.5, 3.5, 5],[(1, 50), (50, 200), (200, 500), (500, 1000), (1000, 4500), (4500, float('inf'))]]}
 
         cell_sizes = cell_sizes.split(',')
         
