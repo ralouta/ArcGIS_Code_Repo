@@ -555,7 +555,6 @@ class MultiScaleDL(object):
                 
                 # If the OBJECTID is in the list, delete the row
                 if row[0] in merge_src_dict[fc_path]:
-                    arcpy.AddMessage(row[0])
                     cursor.deleteRow()
             del cursor
 
