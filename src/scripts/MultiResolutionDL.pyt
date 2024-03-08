@@ -80,7 +80,8 @@ class MultiScaleDL(object):
         # Define parameters for the tool
         params = [arcpy.Parameter(displayName="Input Raster",
                                 name="in_raster",
-                                datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset"],
+                                datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
+                                           "DERasterDataset", "GPRasterLayer"],
                                 parameterType="Required",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Cell Sizes",
@@ -96,6 +97,11 @@ class MultiScaleDL(object):
                 arcpy.Parameter(displayName="Specified Cell Size",
                                 name="specified_cell_size",
                                 datatype="GPDouble",
+                                parameterType="Required",
+                                direction="Input"),
+                arcpy.Parameter(displayName="Deep Learning Workflow",
+                                name="dl_workflow",
+                                datatype="GPString",
                                 parameterType="Required",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Model Definition",
@@ -165,32 +171,36 @@ class MultiScaleDL(object):
                                 direction="Input")]
                 
 
+        # Set the parameter's filter to a ValueList to create a dropdown menu
+        params[4].filter.type = 'ValueList'
+        params[4].filter.list = ['General Feature Extraction', 'Text SAM Feature Extraction']
+
         # Set a filter to only accept .dlpk files for the "Model Definition" parameter
-        params[4].filter.list = ['dlpk']
+        params[5].filter.list = ['dlpk']
 
         # Set the default value for the "Output Geodatabase" parameter to the ArcGIS Pro default geodatabase
-        params[5].value = arcpy.env.workspace
+        params[6].value = arcpy.env.workspace
 
         # Set the enabled property of parameters[5] to False
-        params[7].enabled = False
-        params[7].value = ""
+        params[8].enabled = False
+        params[8].value = ""
 
         #set the value of the "Threshold" parameter to 0.65
-        params[9].value = 0.65
+        params[10].value = 0.65
         
         # Set a filter to only accept "CPU" or "GPU" for the "Processor Type" parameter
-        params[10].filter.type = "ValueList"
-        params[10].filter.list = ["CPU", "GPU"]
+        params[11].filter.type = "ValueList"
+        params[11].filter.list = ["CPU", "GPU"]
 
         # Set the default value for processor type to GPU and the "GPU ID" parameter to 0
-        params[10].value = "GPU"
-        params[11].value = 0
-        params[14].value = 4.0
-        params[15].value = 4500.0
+        params[11].value = "GPU"
+        params[12].value = 0
+        params[15].value = 4.0
+        params[16].value = 4500.0
 
         # Set the filter for the "Regularize or Generalize the output feature" parameter
-        params[16].filter.type = "ValueList"
-        params[16].filter.list = ["Regularize Right Angle", "Regularize Circle", "Generalize"]
+        params[17].filter.type = "ValueList"
+        params[17].filter.list = ["Regularize Right Angle", "Regularize Circle", "Generalize"]
 
         return params
     def isLicensed(self):
@@ -208,13 +218,12 @@ class MultiScaleDL(object):
                 parameters[1].setErrorMessage('Invalid input format. Please enter decimal values separated by commas.')
         
         # Make the text_prompt parameter only visible if "sam" is in params[2].value.lower()
-        if parameters[4].value:
-            if 'sam' in parameters[4].valueAsText.lower():
-                parameters[7].enabled = True
-                parameters[9].enabled = False
-            else:
-                parameters[7].enabled = False
-                parameters[9].enabled = True
+        if parameters[4].valueAsText == 'Text SAM Feature Extraction':
+            parameters[8].enabled = True
+            parameters[10].enabled = False
+        else:
+            parameters[8].enabled = False
+            parameters[10].enabled = True
 
         if parameters[2].value:
             parameters[3].enabled = False
@@ -242,19 +251,20 @@ class MultiScaleDL(object):
         cell_sizes = parameters[1].valueAsText
         use_avg_cell_size = parameters[2].value
         specified_cell_size = parameters[3].value
-        in_model_definition = parameters[4].valueAsText
-        out_gdb = parameters[5].valueAsText
-        out_fc_name = parameters[6].valueAsText
-        text_prompt = parameters[7].valueAsText
-        batch_size = parameters[8].valueAsText
-        threshold = parameters[9].valueAsText
-        processor_type = parameters[10].valueAsText
-        gpu_id = parameters[11].valueAsText
-        processing_extent = parameters[12].valueAsText
-        processing_mask = parameters[13].valueAsText
-        min_area = parameters[14].value
-        max_area = parameters[15].value
-        regularize_generalize = parameters[16].valueAsText
+        dl_workflow = parameters[4].valueAsText
+        in_model_definition = parameters[5].valueAsText
+        out_gdb = parameters[6].valueAsText
+        out_fc_name = parameters[7].valueAsText
+        text_prompt = parameters[8].valueAsText
+        batch_size = parameters[9].valueAsText
+        threshold = parameters[10].valueAsText
+        processor_type = parameters[11].valueAsText
+        gpu_id = parameters[12].valueAsText
+        processing_extent = parameters[13].valueAsText
+        processing_mask = parameters[14].valueAsText
+        min_area = parameters[15].value
+        max_area = parameters[16].value
+        regularize_generalize = parameters[17].valueAsText
 
         # Define the tolerances
         tolerances = {"Regularize Right Angle":[[0.5, 1, 1.5, 2.5, 3.5, 5],[(1, 50), (50, 200), (200, 500), (500, 1000), (1000, 4500), (4500, float('inf'))]],
@@ -326,9 +336,9 @@ class MultiScaleDL(object):
                 arcpy.AddMessage("Detecting objects using deep learning...")
                 out_fc = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_raw")
                 
-                if 'building' in in_model_definition.lower():
+                if dl_workflow == 'General Feature Extraction':
                     arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
-                elif 'sam' in in_model_definition.lower():
+                elif dl_workflow == 'Text SAM Feature Extraction':
                     arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
                 # if not arcpy.Exists(out_fc):
                 arcpy.ia.DetectObjectsUsingDeepLearning(
