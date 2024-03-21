@@ -255,7 +255,10 @@ class MultiScaleDL(object):
         in_model_definition = parameters[5].valueAsText
         out_gdb = parameters[6].valueAsText
         out_fc_name = parameters[7].valueAsText
-        text_prompt = parameters[8].valueAsText
+        if dl_workflow == 'Text SAM Feature Extraction':
+            text_prompt = parameters[8].valueAsText
+        else:
+            text_prompt = None
         batch_size = parameters[9].valueAsText
         threshold = parameters[10].valueAsText
         processor_type = parameters[11].valueAsText
