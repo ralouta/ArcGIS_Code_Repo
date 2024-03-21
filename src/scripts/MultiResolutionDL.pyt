@@ -181,9 +181,8 @@ class MultiScaleDL(object):
         # Set the default value for the "Output Geodatabase" parameter to the ArcGIS Pro default geodatabase
         params[6].value = arcpy.env.workspace
 
-        # Set the enabled property of parameters[5] to False
-        params[8].enabled = False
-        params[8].value = ""
+        #Set the defailt text prompt to ""
+        params[8].value = " "
 
         #set the value of the "Threshold" parameter to 0.65
         params[10].value = 0.65
@@ -216,12 +215,15 @@ class MultiScaleDL(object):
             pattern = r'^(\d+(\.\d+)?,)*\d+(\.\d+)?$'
             if not re.match(pattern, parameters[1].valueAsText):
                 parameters[1].setErrorMessage('Invalid input format. Please enter decimal values separated by commas.')
-        
-        # Make the text_prompt parameter only visible if "sam" is in params[2].value.lower()
+
+        # Enable or disable text prompt or threshold based on the selected deep learning workflow.        
+        parameters[8].enabled = False
+        parameters[10].enabled = False
+
         if parameters[4].valueAsText == 'Text SAM Feature Extraction':
             parameters[8].enabled = True
             parameters[10].enabled = False
-        else:
+        elif parameters[4].valueAsText == 'General Feature Extraction':
             parameters[8].enabled = False
             parameters[10].enabled = True
 
@@ -255,12 +257,9 @@ class MultiScaleDL(object):
         in_model_definition = parameters[5].valueAsText
         out_gdb = parameters[6].valueAsText
         out_fc_name = parameters[7].valueAsText
-        if dl_workflow == 'Text SAM Feature Extraction':
-            text_prompt = parameters[8].valueAsText
-        else:
-            text_prompt = None
+        text_prompt = parameters[8].valueAsText
         batch_size = parameters[9].valueAsText
-        threshold = parameters[10].valueAsText
+        threshold = parameters[10].value
         processor_type = parameters[11].valueAsText
         gpu_id = parameters[12].valueAsText
         processing_extent = parameters[13].valueAsText
