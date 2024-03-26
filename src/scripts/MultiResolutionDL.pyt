@@ -619,7 +619,6 @@ class MultiScaleDL(object):
 
                 intersect_objectids = []
                 for row in intersect_search_cursor:
-                    arcpy.AddMessage(f"Intersecting objectids: {row[0]}")
                     intersect_objectids.append(row[0])
 
                 del intersect_search_cursor
