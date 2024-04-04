@@ -402,7 +402,7 @@ class MultiScaleDL(object):
             arcpy.AddMessage("Pairwise Dissolve - Mean Confidence completed.")
 
             # Select Layer By Attribute 6 -1000
-            arcpy.AddMessage("Running building classification by area...")
+            arcpy.AddMessage("Running feature classification by area...")
 
             # Define the output paths
             output_paths = [f"{arcpy.env.workspace}\\temp_select_layer_{int(tolerance*100)}" for tolerance in tolerances[regularize_generalize][0]]
@@ -491,14 +491,14 @@ class MultiScaleDL(object):
                     torch.cuda.empty_cache()
                 
                 else:
-                    arcpy.AddMessage(f"Running Generalizing Building Footprints with tolerance {tolerance}...")
+                    arcpy.AddMessage(f"Running Generalizing features with tolerance {tolerance}...")
                     tolerance_cm = int(tolerance * 100)
                     generalized_output = f"{arcpy.env.workspace}\\Buildings_{tolerance_cm}cm"
                     arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance}...")
                     arcpy.Copy_management(output_path, generalized_output)
                     arcpy.edit.Generalize(in_features=generalized_output, tolerance=tolerance)
                     regularized_outputs.append(generalized_output)
-                    arcpy.AddMessage(f"Generalizing Building Footprints with tolerance {tolerance} completed.")
+                    arcpy.AddMessage(f"Generalizing features with tolerance {tolerance} completed.")
                     torch.cuda.empty_cache()
             # Delete temporary outputs
             arcpy.AddMessage("Deleting temporary outputs...")
