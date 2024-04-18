@@ -1,22 +1,17 @@
-"""This Python script defines a custom ArcGIS Pro toolbox named MultiScaleDL for multi-scale deep learning. 
-The toolbox contains a single tool, also named MultiScaleDL.
+"""
+MultiResolutionDL.pyt
 
-The MultiScaleDL tool is designed to perform object detection on geospatial raster data using a deep learning model. 
-The tool takes several parameters, including an input raster, a list of cell sizes, a deep learning model definition file, 
-an output geodatabase, an output feature class name, a batch size, a threshold, a processor type, a GPU ID, and a 
-processing extent.
+This Python toolbox contains a set of tools for performing multi-resolution deep learning tasks. 
 
-The execute method of the MultiScaleDL tool is where the main functionality resides. It first sets up the environment, 
-retrieves the parameters, and prepares for multiple runs of the "Detect Objects Using Deep Learning" function with 
-different cell sizes.
+The primary tool in this toolbox, MultiScaleDL, allows users to apply deep learning models to raster data at multiple scales. 
 
-For each cell size, it sets the environment, runs the "Detect Objects Using Deep Learning" function, and stores the output. 
-The "Detect Objects Using Deep Learning" function is part of the arcpy.ia module and is used to detect objects in the 
-input raster based on the provided deep learning model.
+This can be particularly useful for tasks such as feature extraction, where the size of the features of interest can vary widely.
 
-The model tool will then perform some high-level QA/QC over the output data then regularize by a pre-set 
-tolerance for a list of building areas. The model will then intersect all the output layers to generate 
-one final buildings feature class"""
+The tool accepts a variety of input parameters, including the input raster, cell sizes, deep learning workflow, model definition, and output geodatabase, among others. 
+It also provides options for regularizing or generalizing the output feature. 
+
+The toolbox is designed to work with ArcGIS Pro and uses arcpy, the ArcGIS Python module, for many of its operations.
+"""
 
 import arcpy
 
