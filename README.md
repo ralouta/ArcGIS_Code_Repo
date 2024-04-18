@@ -16,7 +16,7 @@ Please ensure you have the prerequisites installed before proceeding.
 - `data/`: Contains input and output data.
 - `docs/`: Contains documentation and images.
 - `src/`: Contains the source code for the project.
-    - `scripts/`: Contains Python scripts and ArcGIS Pro toolboxes (.pyt files).
+    - `scripts/`: Contains Python scripts and ArcGIS Pro toolboxes (.pyt files). These scripts and toolboxes are used for various geospatial data management and analysis tasks, such as creating and manipulating geodatabases, managing ArcGIS Online resources, and performing deep learning on geospatial data.
     - `tests/`: Contains Jupyter notebooks for testing the scripts and toolboxes.
 - `README.md`: This file.
 - `requirements.txt`: Lists the Python packages required to run the scripts and notebooks.
@@ -33,9 +33,4 @@ Remember to save your project to keep the toolbox in your project for future use
 
 ## Scripts and Toolboxes
 
-- `CreateSentinelMosaicfromAOI.ipynb`: A Jupyter notebook for creating a Sentinel mosaic from an Area of Interest (AOI).
-- `MultiResolutionDL.pyt`: An ArcGIS Pro toolbox for multi-scale deep learning. The toolbox contains a single tool, also named MultiScaleDL, which performs object detection on geospatial raster data using a deep learning model.
-
-## Tests
-
-The `tests/` directory contains Jupyter notebooks for testing the scripts and toolboxes. For example, `CreateTerrainMosaicfromAOI.ipynb` tests the creation of a terrain mosaic from an AOI.
+The scripts and toolboxes in the `src/scripts/` directory are designed to work with ArcGIS Pro and the ArcGIS Deep Learning Framework. They provide functionality for managing and analyzing geospatial data, including creating and manipulating geodatabases, managing ArcGIS Online resources, and performing deep learning on geospatial data. Each script or toolbox is documented with comments explaining its purpose and usage.
