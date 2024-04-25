@@ -156,7 +156,7 @@ def return_extents(out_gdb, in_raster, processing_extent, cell_size):
 
     arcpy.management.Delete("ZeroRaster")
     arcpy.management.Delete("ZeroPolygon")
-    arcpy.management.Delete(os.path.join(out_gdb, "JoinedPolygon"))
+    #arcpy.management.Delete(os.path.join(out_gdb, "JoinedPolygon"))
     arcpy.management.Delete(extent_fc)
    
     arcpy.AddMessage(f"Number of sub-extents: {len(extents)}")
@@ -470,18 +470,29 @@ class MultiScaleDL(object):
                             elif dl_workflow == 'Text SAM Feature Extraction':
                                 arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
                             if not arcpy.Exists(out_fc_subextent):
-                                arcpy.ia.DetectObjectsUsingDeepLearning(
-                                    in_raster=in_raster,
-                                    out_detected_objects=out_fc_subextent,
-                                    in_model_definition=in_model_definition,
-                                    arguments=arguments,
-                                    run_nms="NO_NMS",
-                                    confidence_score_field="Confidence",
-                                    class_value_field="Class",
-                                    max_overlap_ratio=0,
-                                    processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                                )
-                                
+                                for attempt in range(2):  # try twice
+                                    try:
+                                        arcpy.ia.DetectObjectsUsingDeepLearning(
+                                            in_raster=in_raster,
+                                            out_detected_objects=out_fc_subextent,
+                                            in_model_definition=in_model_definition,
+                                            arguments=arguments,
+                                            run_nms="NO_NMS",
+                                            confidence_score_field="Confidence",
+                                            class_value_field="Class",
+                                            max_overlap_ratio=0,
+                                            processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
+                                        )
+                                        break  # if successful, break the loop
+                                    except Exception as e:
+                                        if attempt < 1:  # if first attempt, continue to the next iteration
+                                            arcpy.AddMessage(f"An error occurred: {e}/n Retrying...")
+                                            continue
+                                        else:  # if second attempt, delete the output and break the loop
+                                            arcpy.Delete_management(out_fc_subextent)
+                                            arcpy.AddMessage(f"An error occurred: {e}/n Restart the tool to continue from where you left.")
+                                            break
+                                                    
                             # Clear the CUDA cache
                             torch.cuda.empty_cache()
                         
@@ -498,17 +509,28 @@ class MultiScaleDL(object):
                         elif dl_workflow == 'Text SAM Feature Extraction':
                             arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
                         if not arcpy.Exists(out_fc):
-                            arcpy.ia.DetectObjectsUsingDeepLearning(
-                                in_raster=in_raster,
-                                out_detected_objects=out_fc,
-                                in_model_definition=in_model_definition,
-                                arguments=arguments,
-                                run_nms="NO_NMS",
-                                confidence_score_field="Confidence",
-                                class_value_field="Class",
-                                max_overlap_ratio=0,
-                                processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                            )
+                            for attempt in range(2):  # try twice
+                                try:
+                                    arcpy.ia.DetectObjectsUsingDeepLearning(
+                                        in_raster=in_raster,
+                                        out_detected_objects=out_fc,
+                                        in_model_definition=in_model_definition,
+                                        arguments=arguments,
+                                        run_nms="NO_NMS",
+                                        confidence_score_field="Confidence",
+                                        class_value_field="Class",
+                                        max_overlap_ratio=0,
+                                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
+                                    )
+                                    break  # if successful, break the loop
+                                except Exception as e:
+                                    if attempt < 1:  # if first attempt, continue to the next iteration
+                                        arcpy.AddMessage(f"An error occurred: {e}/n Retrying...")
+                                        continue
+                                    else:  # if second attempt, delete the output and break the loop
+                                        arcpy.Delete_management(out_fc)
+                                        arcpy.AddMessage(f"An error occurred: {e}/n Restart the tool to continue from where you left.")
+                                        break
 
                         # Clear the CUDA cache
                         arcpy.AddMessage("Clearing CUDA cache...")
