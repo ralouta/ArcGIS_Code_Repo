@@ -500,7 +500,7 @@ class MultiScaleDL(object):
                                         else:
                                             sub_extents = return_extents(out_gdb, in_raster, str(extents[i]), cell_size, int(pixels_extent/2))
                                             for j in range(len(sub_extents)):
-                                                out_fc_subextent_j = f"{out_fc_subextent}_{j}"
+                                                out_fc_subextent_j = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_{i}_{j}_raw")
                                                 with arcpy.EnvManager(cellSize=cell_size/2, mask=processing_mask, processorType=processor_type, extent=sub_extents[j]):
                                                     arcpy.AddMessage(f"Detecting objects using deep learning for sub-extent {i} {j}...")
                                                     arcpy.ia.DetectObjectsUsingDeepLearning(
@@ -528,7 +528,7 @@ class MultiScaleDL(object):
                             # Clear the CUDA cache
                             torch.cuda.empty_cache()
 
-                    out_fcs = [fc for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
+                    out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
                     arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
                     arcpy.Delete_management([out_fcs])
                 else:
@@ -559,7 +559,7 @@ class MultiScaleDL(object):
                                     sub_extents = return_extents(out_gdb, in_raster, processing_extent, cell_size, int(pixels_extent/2))
                                     for i in range(len(sub_extents)):
                                         arcpy.AddMessage(f"Detecting objects using deep learning for sub-extent {i}...")
-                                        out_fc_subextent = f"{out_fc_subextent}_{i}"
+                                        out_fc_subextent = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_{i}_raw")
                                         with arcpy.EnvManager(cellSize=cell_size/2, mask=processing_mask, processorType=processor_type, extent=sub_extents[i]):
                                             arcpy.ia.DetectObjectsUsingDeepLearning(
                                                 in_raster=in_raster,
@@ -576,7 +576,7 @@ class MultiScaleDL(object):
                                             arcpy.AddMessage("Clearing CUDA cache...")
                                             torch.cuda.empty_cache()
                                             arcpy.AddMessage("CUDA cache cleared.")
-                                    out_fcs = [fc for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
+                                    out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
                                     arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
                                     arcpy.Delete_management([out_fcs])
                                     
