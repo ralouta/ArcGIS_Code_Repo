@@ -43,7 +43,7 @@ def bounding_box_to_circle(input_feature_class, output_buffer_feature_class):
                 # Calculate the radius from the area
                 radius = math.sqrt(row[0] / math.pi)
                 # Update the Radius field
-                row[1] = radius
+                row[1] = radius*0.75
                 cursor.updateRow(row)
         # Step 3: Use FeatureToPoint to convert the updated input feature class to a temporary point feature class
         temp_point_feature_class = "temp_point_feature"
@@ -455,11 +455,11 @@ class MultiScaleDL(object):
             
             # Set pixels_extent based on cell_size
             if cell_size <= 0.25:
-                pixels_extent = 50000000
+                pixels_extent = 150000000
             elif 0.25 < cell_size <= 0.35:
-                pixels_extent = 25000000
+                pixels_extent = 200000000
             else:
-                pixels_extent = 10000000
+                pixels_extent = 250000000
 
             # Calculate the number of pixels in the extent
             extent_width = float(processing_extent.split(' ')[2]) - float(processing_extent.split(' ')[0])
@@ -530,7 +530,7 @@ class MultiScaleDL(object):
 
                     out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
                     arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
-                    arcpy.Delete_management([out_fcs])
+                    arcpy.Delete_management(out_fcs)
                 else:
                     with arcpy.EnvManager(cellSize=cell_size, scratchWorkspace=r"", mask=processing_mask, processorType=processor_type, extent=processing_extent):
                         arcpy.AddMessage("Detecting objects using deep learning...")                       
@@ -578,7 +578,7 @@ class MultiScaleDL(object):
                                             arcpy.AddMessage("CUDA cache cleared.")
                                     out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
                                     arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
-                                    arcpy.Delete_management([out_fcs])
+                                    arcpy.Delete_management(out_fcs)
                                     
                             except Exception as e:
                                 if attempt == 0:
@@ -610,7 +610,7 @@ class MultiScaleDL(object):
                 if regularize_generalize == "Regularize Right Angle" or regularize_generalize == "Generalize":
                     buffer_distance = "30"
                 else:
-                    buffer_distance = "50"
+                    buffer_distance = "100"
                 pairwise_buffer_output = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_pairwise_buffer")         
                 arcpy.analysis.PairwiseBuffer(in_features=out_fc, out_feature_class=pairwise_buffer_output, buffer_distance_or_field=f"-{buffer_distance} Centimeters")
 
