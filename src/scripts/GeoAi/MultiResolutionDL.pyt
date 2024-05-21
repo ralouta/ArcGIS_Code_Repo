@@ -42,8 +42,8 @@ def bounding_box_to_circle(input_feature_class, output_buffer_feature_class):
             for row in cursor:
                 # Calculate the radius from the area
                 radius = math.sqrt(row[0] / math.pi)
-                # Update the Radius field
-                row[1] = radius*0.75
+                # Update the Rdius field
+                row[1] = radius*0.85
                 cursor.updateRow(row)
         # Step 3: Use FeatureToPoint to convert the updated input feature class to a temporary point feature class
         temp_point_feature_class = "temp_point_feature"
