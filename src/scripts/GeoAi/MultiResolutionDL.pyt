@@ -54,117 +54,7 @@ def bounding_box_to_circle(input_feature_class, output_buffer_feature_class):
 
         # Optional: Delete the temporary point feature class
         arcpy.management.Delete(temp_point_feature_class)
-
-def return_extents(out_gdb, in_raster, processing_extent, cell_size, pixels_extent):
-    if "NaN" in processing_extent:
-        processing_extent = processing_extent.split("NaN")[0]
-    # Calculate the number of pixels in the extent
-    extent_width = float(processing_extent.split(' ')[2]) - float(processing_extent.split(' ')[0])
-    extent_height = float(processing_extent.split(' ')[3]) - float(processing_extent.split(' ')[1])
-    
-    # Calculate the number of sub-extents needed
-    num_pixels = (extent_width / cell_size) * (extent_height / cell_size)
-    num_sub_extents = math.ceil(num_pixels / pixels_extent)
-    
-    # Calculate the width and height of each sub-extent
-    sub_extent_width = extent_width / num_sub_extents
-    sub_extent_height = extent_height / num_sub_extents
-    
-    # Create a new feature class to store the extents
-    extent_fc = arcpy.management.CreateFeatureclass(out_path=out_gdb, out_name="ExtentFC",
-                                                     geometry_type="POLYGON", spatial_reference=in_raster)
-
-    # Create an insert cursor
-    cursor = arcpy.da.InsertCursor(extent_fc, ["SHAPE@"])
-
-    num_sub_extents_x = math.ceil(extent_width / sub_extent_width)
-    num_sub_extents_y = math.ceil(extent_height / sub_extent_height)
-
-    for i in range(num_sub_extents_x):
-        for j in range(num_sub_extents_y):
-            # Calculate the sub-extent
-            sub_extent = arcpy.Extent(
-                float(processing_extent.split(' ')[0]) + i * sub_extent_width,
-                float(processing_extent.split(' ')[1]) + j * sub_extent_height,
-                float(processing_extent.split(' ')[0]) + (i + 1) * sub_extent_width if i+1 < num_sub_extents_x else float(processing_extent.split(' ')[2]),
-                float(processing_extent.split(' ')[1]) + (j + 1) * sub_extent_height if j+1 < num_sub_extents_y else float(processing_extent.split(' ')[3])
-            )
-
-
-            # Create a polygon from the extent
-            array = arcpy.Array([arcpy.Point(sub_extent.XMin, sub_extent.YMin),
-                                arcpy.Point(sub_extent.XMin, sub_extent.YMax),
-                                arcpy.Point(sub_extent.XMax, sub_extent.YMax),
-                                arcpy.Point(sub_extent.XMax, sub_extent.YMin)])
-            polygon = arcpy.Polygon(array)
-
-            # Insert the polygon into the feature class
-            cursor.insertRow([polygon])
-
-    # Clean up the cursor
-    del cursor
-
-    
-    arcpy.env.workspace = out_gdb
-    with arcpy.EnvManager(cellSize=100, extent=processing_extent):
-        # Check if in_raster is a URL
-        if in_raster.startswith('http'):
-            # Step 1: Create an image server layer
-            image_server_layer = arcpy.MakeImageServerLayer_management(in_raster, "RasterLayer")
-        else:
-            # Step 1: Create a raster layer
-            raster_layer = arcpy.MakeRasterLayer_management(in_raster, "RasterLayer")
-
-
-        # Step 2: Multiply the raster by 0 to create a constant value raster
-        # Ensure Spatial Analyst extension is checked out
-        arcpy.CheckOutExtension("Spatial")
-
-        # Create a Raster object from the image server layer
-        raster = arcpy.Raster("RasterLayer")
-
-        # Multiply the raster by 0
-        zero_raster = raster * 0
-
-        # Convert the raster to integer type
-        int_raster = Int(zero_raster)
-
-        # Save the result
-        int_raster.save("ZeroRaster")
-
-
-        # Step 3: Convert the result to polygon
-        polygon = arcpy.RasterToPolygon_conversion("ZeroRaster", "ZeroPolygon", "NO_SIMPLIFY")
-
-    # Step 4: Spatial join the output polygon with the polygon created in the previous step
-    joined_polygon = arcpy.SpatialJoin_analysis(extent_fc, polygon, os.path.join(out_gdb, "JoinedPolygon"))
-
-    # Open the joined polygon feature class with an UpdateCursor
-    with arcpy.da.UpdateCursor("JoinedPolygon", ["Join_Count"]) as cursor:
-        for row in cursor:
-            # If the Join_Count field is 0, delete the row
-            if row[0] == 0:
-                cursor.deleteRow()
-    # Create an empty list to store the extents
-    extents = []
-
-    # Open the joined polygon feature class with a SearchCursor
-    with arcpy.da.SearchCursor("JoinedPolygon", ["SHAPE@"]) as cursor:
-        for row in cursor:
-            # Get the extent of the feature
-            extent = row[0].extent
-            # Add the extent to the list
-            extents.append(extent)
-
-    arcpy.management.Delete("ZeroRaster")
-    arcpy.management.Delete("ZeroPolygon")
-    #arcpy.management.Delete(os.path.join(out_gdb, "JoinedPolygon"))
-    arcpy.management.Delete(extent_fc)
-   
-    arcpy.AddMessage(f"Number of sub-extents: {len(extents)}")
-   
-    return extents
-
+        
 class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
@@ -189,7 +79,7 @@ class MultiScaleDL(object):
         params = [arcpy.Parameter(displayName="Input Raster",
                                 name="in_raster",
                                 datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
-                                           "DERasterDataset", "GPRasterLayer"],
+                                           "DERasterDataset", "GPRasterLayer", "GPRasterDataLayer"],
                                 parameterType="Required",
                                 direction="Input"),
                 arcpy.Parameter(displayName="Cell Sizes",
@@ -431,6 +321,7 @@ class MultiScaleDL(object):
             # Get the spatial reference of the input raster
             desc = arcpy.Describe(in_raster)
             spatial_ref_obj = desc.spatialReference
+            # in_raster = arcpy.Raster(in_raster)
         # Set the output coordinate system to be the same as the input raster
         arcpy.env.outputCoordinateSystem = spatial_ref_obj
 
@@ -452,143 +343,35 @@ class MultiScaleDL(object):
             arcpy.AddMessage(f"Processing cell size: {cell_size}")
 
             out_fc = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_raw")
-            
-            # Set pixels_extent based on cell_size
-            if cell_size <= 0.25:
-                pixels_extent = 150000000
-            elif 0.25 < cell_size <= 0.35:
-                pixels_extent = 200000000
-            else:
-                pixels_extent = 250000000
-
-            # Calculate the number of pixels in the extent
-            extent_width = float(processing_extent.split(' ')[2]) - float(processing_extent.split(' ')[0])
-            extent_height = float(processing_extent.split(' ')[3]) - float(processing_extent.split(' ')[1])
-            num_pixels = (extent_width / cell_size) * (extent_height / cell_size)
-            arcpy.AddMessage(f"Number of pixels: {num_pixels}")
+        
             
             if dl_workflow == 'General Feature Extraction':
                 arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
             elif dl_workflow == 'Text SAM Feature Extraction':
-                arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.1;text_threshold 0.05;box_nms_thresh 0.7;tile_size 512"
+                arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.2;text_threshold 0.1;tta_scales 1;nms_overlap 0.1"
+                
                             
             if not arcpy.Exists(out_fc):
-                # If the number of pixels is more than 100,000, divide the extent
-                if num_pixels > pixels_extent:
-                    extents = return_extents(out_gdb, in_raster, processing_extent, cell_size, pixels_extent)
-                    for i in range(len(extents)):
-                        with arcpy.EnvManager(cellSize=cell_size, mask=processing_mask, processorType=processor_type, extent=extents[i]):
-                            arcpy.AddMessage(f"Detecting objects using deep learning for sub-extent {i}...")
-                            out_fc_subextent = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_{i}_raw")
-                            if not arcpy.Exists(out_fc_subextent):
-                                for attempt in range(2):
-                                    try:
-                                        if attempt == 0:                                                
-                                            arcpy.ia.DetectObjectsUsingDeepLearning(
-                                                in_raster=in_raster,
-                                                out_detected_objects=out_fc_subextent,
-                                                in_model_definition=in_model_definition,
-                                                arguments=arguments,
-                                                run_nms="NO_NMS",
-                                                confidence_score_field="Confidence",
-                                                class_value_field="Class",
-                                                max_overlap_ratio=0,
-                                                processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                                            )
-                                            torch.cuda.empty_cache()
-                                            break # If the operation is successful, break the loop
-                                        else:
-                                            sub_extents = return_extents(out_gdb, in_raster, str(extents[i]), cell_size, int(pixels_extent/2))
-                                            for j in range(len(sub_extents)):
-                                                out_fc_subextent_j = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_{i}_{j}_raw")
-                                                with arcpy.EnvManager(cellSize=cell_size/2, mask=processing_mask, processorType=processor_type, extent=sub_extents[j]):
-                                                    arcpy.AddMessage(f"Detecting objects using deep learning for sub-extent {i} {j}...")
-                                                    arcpy.ia.DetectObjectsUsingDeepLearning(
-                                                        in_raster=in_raster,
-                                                        out_detected_objects=out_fc_subextent_j,
-                                                        in_model_definition=in_model_definition,
-                                                        arguments=arguments,
-                                                        run_nms="NO_NMS",
-                                                        confidence_score_field="Confidence",
-                                                        class_value_field="Class",
-                                                        max_overlap_ratio=0,
-                                                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                                                    )
-                                                    torch.cuda.empty_cache()
-                                    except Exception as e:
-                                        if attempt == 0:
-                                            arcpy.AddMessage(f"An error occurred: {e} Retrying...")
-                                            torch.cuda.empty_cache()
-                                            arcpy.Delete_management(out_fc_subextent)
-                                        else:
-                                            arcpy.Delete_management(out_fc_subextent)
-                                            arcpy.AddMessage(f"An error occurred: {e} Skipping...")
-                                            break
-                                                    
-                            # Clear the CUDA cache
-                            torch.cuda.empty_cache()
-
-                    out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
-                    arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
-                    arcpy.Delete_management(out_fcs)
-                else:
-                    with arcpy.EnvManager(cellSize=cell_size, scratchWorkspace=r"", mask=processing_mask, processorType=processor_type, extent=processing_extent):
-                        arcpy.AddMessage("Detecting objects using deep learning...")                       
-                        for attempt in range(2):
-                            try:
-                                if attempt == 0:                                        
-                                    arcpy.ia.DetectObjectsUsingDeepLearning(
-                                        in_raster=in_raster,
-                                        out_detected_objects=out_fc,
-                                        in_model_definition=in_model_definition,
-                                        arguments=arguments,
-                                        run_nms="NO_NMS",
-                                        confidence_score_field="Confidence",
-                                        class_value_field="Class",
-                                        max_overlap_ratio=0,
-                                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                                    )
-                                    # Clear the CUDA cache
-                                    arcpy.AddMessage("Clearing CUDA cache...")
-                                    torch.cuda.empty_cache()
-                                    arcpy.AddMessage("CUDA cache cleared.")
-                                    break # If the operation is successful, break the loop
-                                else:
-                                    arcpy.AddMessage("GPU ran out of memory. Dividing the extent and trying again...")
-
-                                    sub_extents = return_extents(out_gdb, in_raster, processing_extent, cell_size, int(pixels_extent/2))
-                                    for i in range(len(sub_extents)):
-                                        arcpy.AddMessage(f"Detecting objects using deep learning for sub-extent {i}...")
-                                        out_fc_subextent = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_{i}_raw")
-                                        with arcpy.EnvManager(cellSize=cell_size/2, mask=processing_mask, processorType=processor_type, extent=sub_extents[i]):
-                                            arcpy.ia.DetectObjectsUsingDeepLearning(
-                                                in_raster=in_raster,
-                                                out_detected_objects=out_fc_subextent,
-                                                in_model_definition=in_model_definition,
-                                                arguments=arguments,
-                                                run_nms="NO_NMS",
-                                                confidence_score_field="Confidence",
-                                                class_value_field="Class",
-                                                max_overlap_ratio=0,
-                                                processing_mode="PROCESS_AS_MOSAICKED_IMAGE"
-                                            )
-                                            # Clear the CUDA cache
-                                            arcpy.AddMessage("Clearing CUDA cache...")
-                                            torch.cuda.empty_cache()
-                                            arcpy.AddMessage("CUDA cache cleared.")
-                                    out_fcs = [os.path.join(out_gdb, fc) for fc in arcpy.ListFeatureClasses(f"{out_fc_name}_{int(float(cell_size)*100)}_*_raw")]
-                                    arcpy.management.Merge(out_fcs, f"{out_gdb}\\{out_fc_name}_{int(float(cell_size)*100)}_raw")
-                                    arcpy.Delete_management(out_fcs)
-                                    
-                            except Exception as e:
-                                if attempt == 0:
-                                    arcpy.AddMessage(f"An error occurred: {e} Retrying...")
-                                    torch.cuda.empty_cache()
-                                    arcpy.Delete_management(out_fc_subextent)
-                                else:
-                                    arcpy.Delete_management(out_fc_subextent)
-                                    arcpy.AddMessage(f"An error occurred: {e} Skipping...")
-                                    break
+                with arcpy.EnvManager(cellSize=cell_size, mask=processing_mask, extent=processing_extent):
+                    arcpy.AddMessage(f"Processing extent: {processing_extent}")
+                    arcpy.AddMessage("Detecting objects using deep learning...")                       
+              
+                    arcpy.ia.DetectObjectsUsingDeepLearning(
+                        in_raster=in_raster,
+                        out_detected_objects=out_fc,
+                        in_model_definition=in_model_definition,
+                        arguments=arguments,
+                        run_nms="NO_NMS",
+                        confidence_score_field="Confidence",
+                        class_value_field="Class",
+                        max_overlap_ratio=0,
+                        processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
+                        use_pixelspace="NO_PIXELSPACE"
+                    )
+                    # Clear the CUDA cache
+                    arcpy.AddMessage("Clearing CUDA cache...")
+                    torch.cuda.empty_cache()
+                    arcpy.AddMessage("CUDA cache cleared.")
                         
             if not arcpy.Exists(merge_output):
                 # Repair geometry

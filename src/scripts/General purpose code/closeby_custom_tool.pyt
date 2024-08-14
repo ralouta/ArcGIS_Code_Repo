@@ -1,6 +1,26 @@
 import arcpy
 import os
 
+"""
+The Closeby Custom Tool is a Python toolbox for ArcGIS designed to aggregate points
+based on their proximity to a central point. It calculates the distances of all points
+from a specified central point, selects a user-defined percentage of the closest points,
+and then creates a convex hull polygon around these selected points.
+
+This tool is useful for spatial analyses where understanding the area covered
+by the nearest points to a location is necessary. It leverages ArcPy,
+a Python site-package that provides a useful and productive way to perform
+geographic data analysis, data conversion, data management, and map automation
+with Python.
+
+This toolbox contains a single tool, `ClosebyCustomTool`, which implements
+the described functionality through its `execute` method. Parameters for the
+tool include the input points layer, a field in the layer to identify points,
+the ID of the central point, the percentage of points to include, and the
+output location for the generated polygon.
+"""
+
+
 class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the .pyt file)."""
