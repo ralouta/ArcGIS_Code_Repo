@@ -122,6 +122,11 @@ class MultiScaleDL(object):
                                 datatype="GPString",
                                 parameterType="Required",
                                 direction="Input"),
+                arcpy.Parameter(displayName="TTA Scales",
+                                name="tta_scales",
+                                datatype="GPString",
+                                parameterType="Optional",
+                                direction="Input"),
                 arcpy.Parameter(displayName="Batch Size",
                                 name="batch_size",
                                 datatype="GPLong",
@@ -182,22 +187,25 @@ class MultiScaleDL(object):
         #Set the defailt text prompt to ""
         params[8].value = " "
 
+        #Set the default value for TTAscales to 1
+        params[9].value = "1"
+
         #set the value of the "Threshold" parameter to 0.65
-        params[10].value = 0.65
+        params[11].value = 0.65
         
         # Set a filter to only accept "CPU" or "GPU" for the "Processor Type" parameter
-        params[11].filter.type = "ValueList"
-        params[11].filter.list = ["CPU", "GPU"]
+        params[12].filter.type = "ValueList"
+        params[12].filter.list = ["CPU", "GPU"]
 
         # Set the default value for processor type to GPU and the "GPU ID" parameter to 0
-        params[11].value = "GPU"
-        params[12].value = 0
-        params[15].value = 4.0
-        params[16].value = 4500.0
+        params[12].value = "GPU"
+        params[13].value = 0
+        params[16].value = 4.0
+        params[17].value = 4500.0
 
         # Set the filter for the "Regularize or Generalize the output feature" parameter
-        params[17].filter.type = "ValueList"
-        params[17].filter.list = ["Regularize Right Angle", "Regularize Circle", "Generalize"]
+        params[18].filter.type = "ValueList"
+        params[18].filter.list = ["Regularize Right Angle", "Regularize Circle", "Generalize"]
 
         return params
     def isLicensed(self):
@@ -216,14 +224,17 @@ class MultiScaleDL(object):
 
         # Enable or disable text prompt or threshold based on the selected deep learning workflow.        
         parameters[8].enabled = False
-        parameters[10].enabled = False
+        
+        parameters[11].enabled = False
 
         if parameters[4].valueAsText == 'Text SAM Feature Extraction':
             parameters[8].enabled = True
-            parameters[10].enabled = False
+            parameters[9].enabled = True
+            parameters[11].enabled = False
         elif parameters[4].valueAsText == 'General Feature Extraction':
             parameters[8].enabled = False
-            parameters[10].enabled = True
+            parameters[9].enabled = False
+            parameters[11].enabled = True
 
         if parameters[2].value:
             parameters[3].enabled = False
@@ -256,15 +267,16 @@ class MultiScaleDL(object):
         out_gdb = parameters[6].valueAsText
         out_fc_name = parameters[7].valueAsText
         text_prompt = parameters[8].valueAsText
-        batch_size = parameters[9].valueAsText
-        threshold = parameters[10].value
-        processor_type = parameters[11].valueAsText
-        gpu_id = parameters[12].valueAsText
-        processing_extent = parameters[13].valueAsText
-        processing_mask = parameters[14].valueAsText
-        min_area = parameters[15].value
-        max_area = parameters[16].value
-        regularize_generalize = parameters[17].valueAsText
+        tta_scales = parameters[9].valueAsText
+        batch_size = parameters[10].valueAsText
+        threshold = parameters[11].value
+        processor_type = parameters[12].valueAsText
+        gpu_id = parameters[13].valueAsText
+        processing_extent = parameters[14].valueAsText
+        processing_mask = parameters[15].valueAsText
+        min_area = parameters[16].value
+        max_area = parameters[17].value
+        regularize_generalize = parameters[18].valueAsText
 
         # Define the tolerances
         tolerances = {"Regularize Right Angle":[[0.5, 1, 1.5, 2.5, 3.5, 5],[(1, 50), (50, 200), (200, 500), (500, 1000), (1000, 4500), (4500, float('inf'))]],
@@ -348,7 +360,7 @@ class MultiScaleDL(object):
             if dl_workflow == 'General Feature Extraction':
                 arguments = f"padding 128;batch_size {batch_size};threshold {threshold};return_bboxes False;test_time_augmentation False;merge_policy mean;tile_size 512"
             elif dl_workflow == 'Text SAM Feature Extraction':
-                arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.2;text_threshold 0.1;tta_scales 1;nms_overlap 0.1"
+                arguments = f"text_prompt {text_prompt};padding 128;batch_size {batch_size};box_threshold 0.2;text_threshold {0.1};tta_scales {tta_scales};nms_overlap 0.1"
                 
                             
             if not arcpy.Exists(out_fc):
@@ -476,7 +488,7 @@ class MultiScaleDL(object):
                     if regularize_generalize == "Regularize Right Angle":
                         arcpy.AddMessage(f"Running Regularizing Rectangular Footprints with tolerance {tolerance}...")
                         tolerance_cm = int(tolerance * 100)
-                        regularized_output = f"{arcpy.env.workspace}\\rectangle_{tolerance_cm}cm"
+                        regularized_output = os.path.join(arcpy.env.workspace, f"rectangle_{tolerance_cm}cm")
                         arcpy.AddMessage(f"Regularizing Rectangular Footprints with tolerance {tolerance}...")
                         
                         while attempts < max_retries:
@@ -498,12 +510,11 @@ class MultiScaleDL(object):
                     elif regularize_generalize == "Regularize Circle":
                         arcpy.AddMessage(f"Running Regularizing Circular objects with tolerance {tolerance}...")
                         tolerance_cm = int(tolerance * 100)
-                        regularized_output = f"{arcpy.env.workspace}\\circle_{tolerance_cm}cm"
+                        regularized_output = os.path.join(arcpy.env.workspace, f"circle_{tolerance_cm}cm")
                         bounding_box_to_circle(output_path, regularized_output)
                         regularized_outputs.append(regularized_output)
                         arcpy.AddMessage(f"Regularizing Circular objects with tolerance {tolerance} completed.")
                         torch.cuda.empty_cache()
-                    
                     else:
                         arcpy.AddMessage(f"Running Generalizing features with tolerance {tolerance}...")
                         tolerance_cm = int(tolerance * 100)
