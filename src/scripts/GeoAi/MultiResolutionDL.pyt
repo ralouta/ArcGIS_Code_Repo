@@ -494,9 +494,8 @@ class MultiScaleDL(object):
                         while attempts < max_retries:
                             try:
                                 # Try to regularize the building footprint
-                                with arcpy.EnvManager(processorType=processor_type):
-                                    arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=regularized_output, method="RIGHT_ANGLES", tolerance=tolerance)
-                                    break  # If the operation is successful, break the loop
+                                arcpy.ddd.RegularizeBuildingFootprint(in_features=output_path, out_feature_class=regularized_output, method="RIGHT_ANGLES", tolerance=tolerance)
+                                break  # If the operation is successful, break the loop
                             except Exception as e:
                                 arcpy.AddMessage(f"An error occurred: {e}/n Cancel the tool and restart ArcGIS Pro.")
                                 attempts += 1  # Increase the number of attempts
