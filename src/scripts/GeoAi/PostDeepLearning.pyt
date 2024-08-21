@@ -45,7 +45,7 @@ class PostDeepLearningBuildingsWorkflows(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input",
-            multiValue=False
+            multiValue=True
         )
         unique_value.parameterDependencies = [field_name.name]
         params.append(unique_value)
@@ -210,7 +210,7 @@ class PostDeepLearningRoadsWorkflows(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input",
-            multiValue=False
+            multiValue=True
         )
         unique_values_param.parameterDependencies = [field_name.name]
         params.append(unique_values_param)
