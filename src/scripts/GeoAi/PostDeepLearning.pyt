@@ -106,7 +106,7 @@ class PostDeepLearningBuildingsWorkflows(object):
         # Apply pairwise buffer with -125 cm
         messages.addMessage("Applying pairwise buffer with -125 cm...")
         buffer_fc = "in_memory/buffer_fc"
-        arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "-125 Centimeters")
+        arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "-150 Centimeters")
         messages.addMessage("Pairwise buffer applied.")
 
         # Run pairwise dissolve
@@ -124,7 +124,7 @@ class PostDeepLearningBuildingsWorkflows(object):
         # Apply a 125 cm positive buffer
         messages.addMessage("Applying a 125 cm positive buffer...")
         buffer_positive_fc = "in_memory/buffer_positive_fc"
-        arcpy.analysis.PairwiseBuffer(singlepart_fc, buffer_positive_fc, "125 Centimeters")
+        arcpy.analysis.PairwiseBuffer(singlepart_fc, buffer_positive_fc, "150 Centimeters")
         messages.addMessage("Positive buffer applied.")
 
         # Fill gaps with max gap area of 25 square meters
@@ -137,37 +137,56 @@ class PostDeepLearningBuildingsWorkflows(object):
         messages.addMessage("Filtering polygons by area...")
         feature_class_1 = "in_memory/feature_class_1"
         feature_class_2 = "in_memory/feature_class_2"
+        feature_class_3 = "in_memory/feature_class_3"
+        feature_class_4 = "in_memory/feature_class_4"
+
         arcpy.CreateFeatureclass_management("in_memory", "feature_class_1", "POLYGON", template=filled_gaps_fc)
         arcpy.CreateFeatureclass_management("in_memory", "feature_class_2", "POLYGON", template=filled_gaps_fc)
+        arcpy.CreateFeatureclass_management("in_memory", "feature_class_3", "POLYGON", template=filled_gaps_fc)
+        arcpy.CreateFeatureclass_management("in_memory", "feature_class_4", "POLYGON", template=filled_gaps_fc)
 
         with arcpy.da.SearchCursor(filled_gaps_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
-            with arcpy.da.InsertCursor(feature_class_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(feature_class_2, ["SHAPE@"]) as cursor_2:
+            with arcpy.da.InsertCursor(feature_class_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(feature_class_2, ["SHAPE@"]) as cursor_2, arcpy.da.InsertCursor(feature_class_3, ["SHAPE@"]) as cursor_3, arcpy.da.InsertCursor(feature_class_4, ["SHAPE@"]) as cursor_4:
                 for row in cursor:
-                    if 4 <= row[1] <= 3500:
+                    if 4 <= row[1] <= 100:
                         cursor_1.insertRow([row[0]])
-                    elif row[1] > 3500:
+                    elif 100 < row[1] <= 1000:
                         cursor_2.insertRow([row[0]])
+                    elif 1000 < row[1] <= 5000:
+                        cursor_3.insertRow([row[0]])
+                    else:
+                        cursor_4.insertRow([row[0]])
         messages.addMessage("Polygons filtered by area.")
 
         # Regularize building footprints
-        messages.addMessage("Regularizing building footprints for feature class 1 (area range: 4 - 3500 square meters)...")
+        messages.addMessage("Regularizing building footprints for feature class 1 (area range: 4 - 100 square meters)...")
         regularized_fc_1 = "in_memory/regularized_fc_1"
         arcpy.ddd.RegularizeBuildingFootprint(feature_class_1, regularized_fc_1, "RIGHT_ANGLES_AND_DIAGONALS", 0.5)
         messages.addMessage("Building footprints for feature class 1 regularized.")
 
-        messages.addMessage("Regularizing building footprints for feature class 2 (area range: > 3500 square meters)...")
+        messages.addMessage("Regularizing building footprints for feature class 2 (area range: 100 - 1000 square meters)...")
         regularized_fc_2 = "in_memory/regularized_fc_2"
-        arcpy.ddd.RegularizeBuildingFootprint(feature_class_2, regularized_fc_2, "RIGHT_ANGLES_AND_DIAGONALS", 3.5)
+        arcpy.ddd.RegularizeBuildingFootprint(feature_class_2, regularized_fc_2, "RIGHT_ANGLES_AND_DIAGONALS", 2.5)
         messages.addMessage("Building footprints for feature class 2 regularized.")
+
+        messages.addMessage("Regularizing building footprints for feature class 3 (area range: 1000 - 5000 square meters)...")
+        regularized_fc_3 = "in_memory/regularized_fc_3"
+        arcpy.ddd.RegularizeBuildingFootprint(feature_class_3, regularized_fc_3, "RIGHT_ANGLES_AND_DIAGONALS", 5)
+        messages.addMessage("Building footprints for feature class 3 regularized.")
+
+        messages.addMessage("Regularizing building footprints for feature class 4 (area range: > 5000 square meters)...")
+        regularized_fc_4 = "in_memory/regularized_fc_4"
+        arcpy.ddd.RegularizeBuildingFootprint(feature_class_4, regularized_fc_4, "RIGHT_ANGLES_AND_DIAGONALS", 7.5)
+        messages.addMessage("Building footprints for feature class 4 regularized.")
 
         # Merge both layers
         messages.addMessage("Merging both feature classes...")
-        arcpy.management.Merge([regularized_fc_1, regularized_fc_2], output_feature_class)
+        arcpy.management.Merge([regularized_fc_1, regularized_fc_2, regularized_fc_3, regularized_fc_4], output_feature_class)
         messages.addMessage("Feature classes merged.")
 
         # Delete intermediate layers
         messages.addMessage("Deleting intermediate layers...")
-        arcpy.management.Delete([polygon_fc, buffer_fc, dissolve_fc, singlepart_fc, buffer_positive_fc, filled_gaps_fc, feature_class_1, feature_class_2, regularized_fc_1, regularized_fc_2])
+        arcpy.management.Delete([polygon_fc, buffer_fc, dissolve_fc, singlepart_fc, buffer_positive_fc, filled_gaps_fc, feature_class_1, feature_class_2, feature_class_3, feature_class_4, regularized_fc_1, regularized_fc_2, regularized_fc_3, regularized_fc_4])
         messages.addMessage("Intermediate layers deleted.")
 
         messages.addMessage("Post-processing workflow completed successfully.")
