@@ -10,20 +10,36 @@ class FeatureServiceDataAnalyzer:
         self.item = None
         self.feature_layer = None
 
+
+    
     def authenticate_and_get_item(self):
         """
         Authenticate with AGOL and get the item.
         """
-        # Prompt user for AGOL credentials
-        username = input("Enter your AGOL username: ")
-        password = getpass.getpass("Enter your AGOL password: ")
-        
-        # Connect to AGOL
-        self.gis = GIS("https://www.arcgis.com", username, password)
-        
+        # Prompt user for AGOL organization URL
+        org_url = input("Enter your AGOL organization URL (e.g., https://myorg.maps.arcgis.com): ")
+
+        # Prompt user to choose authentication method
+        auth_method = input("Choose authentication method (1 for Username/Password, 2 for Client ID): ")
+
+        if auth_method == '1':
+            # Prompt user for AGOL credentials
+            username = input("Enter your AGOL username: ")
+            password = getpass.getpass("Enter your AGOL password: ")
+            
+            # Connect to AGOL using username and password
+            self.gis = GIS(org_url, username, password)
+        elif auth_method == '2':
+            # Prompt user for client ID
+            client_id = input("Enter your client ID: ")
+            self.gis = GIS(org_url, client_id=client_id)
+        else:
+            print("Invalid authentication method selected.")
+            return
+
         # Provide the AGOL item ID
         item_id = input("Enter the AGOL item ID: ")
-        
+
         # Get the item
         self.item = self.gis.content.get(item_id)
 
