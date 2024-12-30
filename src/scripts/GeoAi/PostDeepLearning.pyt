@@ -9,7 +9,30 @@ class Toolbox(object):
         self.alias = "Toolbox for post-processing deep learning results"
 
         # List of tool classes associated with this toolbox
-        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows]
+        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows, PostDeepLearningTreeWorkflows]
+
+def raster_to_polygon(input_raster, field_name, unique_value, messages):
+    messages.addMessage("Starting raster to polygon conversion...")
+
+    # Set the output coordinate system to match the input raster
+    spatial_ref = arcpy.Describe(input_raster).spatialReference
+    arcpy.env.outputCoordinateSystem = spatial_ref
+
+    # Convert raster to polygon
+    messages.addMessage("Converting raster to polygon...")
+    polygon_fc = "in_memory/polygon_fc"
+    arcpy.RasterToPolygon_conversion(input_raster, polygon_fc, "NO_SIMPLIFY", field_name)
+    messages.addMessage("Raster to polygon conversion completed.")
+
+    # Delete polygons with field values not equal to the unique value
+    messages.addMessage(f"Deleting polygons with field values not equal to {unique_value}...")
+    with arcpy.da.UpdateCursor(polygon_fc, [field_name], f"{field_name} <> '{unique_value}'") as cursor:
+        for row in cursor:
+            cursor.deleteRow()
+    messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
+
+    return polygon_fc
+
 class PostDeepLearningBuildingsWorkflows(object):
     def __init__(self):
         self.label = "Post Processing Buildings from Raster Output"
@@ -81,22 +104,7 @@ class PostDeepLearningBuildingsWorkflows(object):
 
         messages.addMessage("Starting the post-processing workflow...")
 
-        # Set the output coordinate system to match the input raster
-        spatial_ref = arcpy.Describe(input_raster).spatialReference
-        arcpy.env.outputCoordinateSystem = spatial_ref
-
-        # Convert raster to polygon
-        messages.addMessage("Converting raster to polygon...")
-        polygon_fc = "in_memory/polygon_fc"
-        arcpy.RasterToPolygon_conversion(input_raster, polygon_fc, "NO_SIMPLIFY", field_name)
-        messages.addMessage("Raster to polygon conversion completed.")
-
-        # Delete polygons with field values not equal to the unique value
-        messages.addMessage(f"Deleting polygons with field values not equal to {unique_value}...")
-        with arcpy.da.UpdateCursor(polygon_fc, [field_name], f"{field_name} <> '{unique_value}'") as cursor:
-            for row in cursor:
-                cursor.deleteRow()
-        messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
+        polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
 
         # Repair polygon geometry
         messages.addMessage("Repairing polygon geometry...")
@@ -265,23 +273,7 @@ class PostDeepLearningRoadsWorkflows(object):
 
         messages.addMessage("Starting the post-processing workflow...")
 
-        # Set the output coordinate system to match the input raster
-        spatial_ref = arcpy.Describe(input_raster).spatialReference
-        arcpy.env.outputCoordinateSystem = spatial_ref
-
-        # Convert raster to polygon
-        messages.addMessage("Converting raster to polygon...")
-        polygon_fc = "in_memory/polygon_fc"
-        arcpy.RasterToPolygon_conversion(input_raster, polygon_fc, "NO_SIMPLIFY", field_name)
-        messages.addMessage("Raster to polygon conversion completed.")
-
-        # Delete polygons with field values not equal to the unique value
-        messages.addMessage(f"Deleting polygons with field values not equal to {unique_value}...")
-        with arcpy.da.UpdateCursor(polygon_fc, [field_name]) as cursor:
-            for row in cursor:
-                if row[0] != unique_value:
-                    cursor.deleteRow()
-        messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
+        polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
 
         # Smooth the polygons
         messages.addMessage("Smoothing the polygons with 25 meters tolerance...")
@@ -344,6 +336,194 @@ class PostDeepLearningRoadsWorkflows(object):
                     row[1] = 10
                 cursor.updateRow(row)
         messages.addMessage("Field for road width added and calculated.")
+
+        messages.addMessage("Post-processing workflow completed successfully.")
+
+        return
+
+class PostDeepLearningTreeWorkflows(object):
+    def __init__(self):
+        self.label = "Post Processing Trees from Raster Output"
+        self.description = "Toolbox for post-processing deep learning results"
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        params = []
+
+        input_raster = arcpy.Parameter(
+            displayName="Input Raster",
+            name="in_raster",
+            datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
+                      "DERasterDataset", "GPRasterLayer", "GPRasterDataLayer"],
+            parameterType="Required",
+            direction="Input"
+        )
+        params.append(input_raster)
+
+        field_name = arcpy.Parameter(
+            displayName="Field Name for Raster to Polygon",
+            name="field_name",
+            datatype="Field",
+            parameterType="Required",
+            direction="Input"
+        )
+        field_name.parameterDependencies = [input_raster.name]
+        params.append(field_name)
+
+        unique_value = arcpy.Parameter(
+            displayName="Unique Value of Selected Field",
+            name="unique_value",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True
+        )
+        unique_value.parameterDependencies = [field_name.name]
+        params.append(unique_value)
+
+        output_feature_class = arcpy.Parameter(
+            displayName="Output Feature Class",
+            name="output_feature_class",
+            datatype="DEFeatureClass",
+            parameterType="Required",
+            direction="Output"
+        )
+        params.append(output_feature_class)
+
+        return params
+
+    def updateParameters(self, parameters):
+        if parameters[1].altered:
+            field_name = parameters[1].valueAsText
+            input_raster = parameters[0].valueAsText
+            if field_name and input_raster:
+                unique_values = set()
+                with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
+                    for row in cursor:
+                        unique_values.add(row[0])
+                parameters[2].filter.list = sorted(unique_values)
+        return
+
+    def execute(self, parameters, messages):
+        input_raster = parameters[0].valueAsText
+        field_name = parameters[1].valueAsText
+        unique_value = parameters[2].valueAsText
+        output_feature_class = parameters[3].valueAsText
+
+        messages.addMessage("Starting the post-processing workflow...")
+
+        polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
+
+        # Split the polygon feature class into two based on area
+        messages.addMessage("Splitting the polygon feature class into two based on area...")
+
+        tree_area_fc_1 = "in_memory/tree_area_fc_1"
+        tree_area_fc_2 = "in_memory/tree_area_fc_2"
+
+        arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_1", "POLYGON", template=polygon_fc)
+        arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_2", "POLYGON", template=polygon_fc)
+
+        with arcpy.da.SearchCursor(polygon_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+            with arcpy.da.InsertCursor(tree_area_fc_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(tree_area_fc_2, ["SHAPE@"]) as cursor_2:
+                for row in cursor:
+                    if row[1] <= 50:
+                        cursor_1.insertRow([row[0]])
+                    else:
+                        cursor_2.insertRow([row[0]])
+        del cursor, cursor_1, cursor_2  # Clean up cursor objects
+                    
+        messages.addMessage("Polygon feature class split into two based on area.")
+        # Minimum bounding geometry
+        messages.addMessage("Applying minimum bounding geometry...")
+        mbg_fc = "in_memory/mbg_fc"
+        arcpy.management.MinimumBoundingGeometry(tree_area_fc_2, mbg_fc, "RECTANGLE_BY_AREA", "None")
+        messages.addMessage("Minimum bounding geometry applied.")
+
+        # Subdivide polygon
+        messages.addMessage("Subdividing polygon...")
+        subdivide_fc = "in_memory/subdivide_fc"
+        arcpy.management.SubdividePolygon(mbg_fc, subdivide_fc, "EQUAL_AREAS", target_area="25 SquareMeters", subdivision_type="STACKED_BLOCKS")
+        messages.addMessage("Polygon subdivided.")
+
+        # Pairwise intersect
+        messages.addMessage("Performing pairwise intersect...")
+        intersect_fc = "in_memory/intersect_fc"
+        arcpy.analysis.PairwiseIntersect([subdivide_fc, tree_area_fc_2], intersect_fc, join_attributes="ALL", cluster_tolerance=None, output_type="INPUT")
+        messages.addMessage("Pairwise intersect completed.")
+
+        # Merge clip_fc with tree_area_fc_1
+        messages.addMessage("Merging clip_fc with tree_area_fc_1...")
+        merged_fc = "in_memory/merged_fc"
+        arcpy.management.Merge([intersect_fc, tree_area_fc_1], merged_fc)
+        messages.addMessage("Merge completed.")
+
+        # Add a field if it doesn't already exist
+        messages.addMessage("Adding and calculating a field for tree width...")
+        width_field = "Width"
+        if not arcpy.ListFields(merged_fc, width_field):
+            arcpy.AddField_management(merged_fc, width_field, "DOUBLE")
+        with arcpy.da.UpdateCursor(merged_fc, ["SHAPE@", width_field]) as cursor:
+            for row in cursor:
+                polygon = row[0]  # Geometry object
+                extent = polygon.extent  # Get the extent (bounding box)
+                width = extent.width  # Width of the bounding box
+                row[1] = width / 3  # Assign the width to the field
+                cursor.updateRow(row)        
+        
+        del cursor  # Clean up cursor object
+
+        messages.addMessage("Field for tree width added and calculated.")
+
+        # Feature to point
+        messages.addMessage("Converting features to points...")
+        points_fc = "in_memory/points_fc"
+        arcpy.management.FeatureToPoint(merged_fc, points_fc, "INSIDE")
+        messages.addMessage("Features converted to points.")
+
+        # Pairwise buffer
+        messages.addMessage("Applying pairwise buffer...")
+        buffer_fc = "in_memory/buffer_fc"
+        arcpy.analysis.PairwiseBuffer(points_fc, buffer_fc, "Width", "NONE")
+        messages.addMessage("Pairwise buffer applied.")
+
+        # Delete all fields from the output buffer except the geometry field
+        messages.addMessage("Deleting all fields from the output buffer except the geometry field...")
+        fields = arcpy.ListFields(buffer_fc)
+        drop_fields = [field.name for field in fields if field.type not in ('OID', 'Geometry')]
+        if drop_fields:
+            arcpy.management.DeleteField(buffer_fc, drop_fields)
+        messages.addMessage("Fields deleted.")
+
+        # Perform spatial join with the initial raster to polygon output feature class
+        messages.addMessage("Performing spatial join with the initial raster to polygon output feature class...")
+        arcpy.analysis.SpatialJoin(buffer_fc, polygon_fc, output_feature_class, join_type="KEEP_COMMON", match_option="INTERSECT")
+        messages.addMessage("Spatial join completed.")
+
+        
+        # Remove small polygons
+        messages.addMessage("Removing polygons with area less than 1 square meters...")
+        with arcpy.da.UpdateCursor(output_feature_class, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+            for row in cursor:
+                if row[1] < 1:
+                    cursor.deleteRow()
+        del cursor  # Clean up cursor object
+
+        # Delete any fields that aren't in polygon_fc fields
+        messages.addMessage("Deleting fields that aren't in polygon_fc fields...")
+        polygon_fc_fields = [field.name for field in arcpy.ListFields(polygon_fc)]
+        output_fields = [field.name for field in arcpy.ListFields(output_feature_class)]
+        fields_to_delete = [field for field in output_fields if field not in polygon_fc_fields and field not in ('OID', 'Geometry', 'Shape_Length', 'Shape_Area')]
+        if fields_to_delete:
+            arcpy.management.DeleteField(output_feature_class, fields_to_delete)
+        else:
+            messages.addMessage("No fields to delete.")
+        messages.addMessage("Fields that aren't in polygon_fc fields deleted.")
+        messages.addMessage("Small polygons removed.")
+
+        # Delete intermediate layers
+        messages.addMessage("Deleting intermediate layers...")
+        arcpy.management.Delete([polygon_fc, tree_area_fc_1, tree_area_fc_2, mbg_fc, subdivide_fc, intersect_fc, merged_fc, points_fc])
+        messages.addMessage("Intermediate layers deleted.")
 
         messages.addMessage("Post-processing workflow completed successfully.")
 
