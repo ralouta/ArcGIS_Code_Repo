@@ -350,15 +350,16 @@ class PostDeepLearningTreeWorkflows(object):
     def getParameterInfo(self):
         params = []
 
-        input_raster = arcpy.Parameter(
-            displayName="Input Raster",
-            name="in_raster",
+        input_rasters = arcpy.Parameter(
+            displayName="Input Rasters",
+            name="in_rasters",
             datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
                       "DERasterDataset", "GPRasterLayer", "GPRasterDataLayer"],
             parameterType="Required",
-            direction="Input"
+            direction="Input",
+            multiValue=True
         )
-        params.append(input_raster)
+        params.append(input_rasters)
 
         field_name = arcpy.Parameter(
             displayName="Field Name for Raster to Polygon",
@@ -367,7 +368,7 @@ class PostDeepLearningTreeWorkflows(object):
             parameterType="Required",
             direction="Input"
         )
-        field_name.parameterDependencies = [input_raster.name]
+        field_name.parameterDependencies = [input_rasters.name]
         params.append(field_name)
 
         unique_value = arcpy.Parameter(
@@ -376,7 +377,7 @@ class PostDeepLearningTreeWorkflows(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input",
-            multiValue=True
+            multiValue=False
         )
         unique_value.parameterDependencies = [field_name.name]
         params.append(unique_value)
@@ -395,135 +396,195 @@ class PostDeepLearningTreeWorkflows(object):
     def updateParameters(self, parameters):
         if parameters[1].altered:
             field_name = parameters[1].valueAsText
-            input_raster = parameters[0].valueAsText
-            if field_name and input_raster:
+            input_rasters = parameters[0].values
+            if field_name and input_rasters:
                 unique_values = set()
-                with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
-                    for row in cursor:
-                        unique_values.add(row[0])
+                for input_raster in input_rasters:
+                    with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
+                        for row in cursor:
+                            unique_values.add(row[0])
                 parameters[2].filter.list = sorted(unique_values)
         return
 
     def execute(self, parameters, messages):
-        input_raster = parameters[0].valueAsText
+        input_rasters = parameters[0].values
         field_name = parameters[1].valueAsText
         unique_value = parameters[2].valueAsText
         output_feature_class = parameters[3].valueAsText
 
         messages.addMessage("Starting the post-processing workflow...")
 
-        polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
+        final_output_fc = "in_memory/final_output_fc"
+        first_iteration = True
+        for input_raster in input_rasters:
+            polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
+            # Repair polygon geometry
+            messages.addMessage("Repairing polygon geometry...")
+            arcpy.RepairGeometry_management(polygon_fc)
+            messages.addMessage("Polygon geometry repaired.")
 
-        # Split the polygon feature class into two based on area
-        messages.addMessage("Splitting the polygon feature class into two based on area...")
+            # Apply a 10 cm buffer
+            messages.addMessage("Applying a 10 cm buffer...")
+            buffer_fc = "in_memory/buffer_fc"
+            arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "10 Centimeters")
+            messages.addMessage("10 cm buffer applied.")
 
-        tree_area_fc_1 = "in_memory/tree_area_fc_1"
-        tree_area_fc_2 = "in_memory/tree_area_fc_2"
+            # Split the polygon feature class into two based on area
+            messages.addMessage("Splitting the polygon feature class into two based on area...")
 
-        arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_1", "POLYGON", template=polygon_fc)
-        arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_2", "POLYGON", template=polygon_fc)
+            tree_area_fc_1 = "in_memory/tree_area_fc_1"
+            tree_area_fc_2 = "in_memory/tree_area_fc_2"
 
-        with arcpy.da.SearchCursor(polygon_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
-            with arcpy.da.InsertCursor(tree_area_fc_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(tree_area_fc_2, ["SHAPE@"]) as cursor_2:
+            arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_1", "POLYGON", template=buffer_fc)
+            arcpy.CreateFeatureclass_management("in_memory", "tree_area_fc_2", "POLYGON", template=buffer_fc)
+
+            with arcpy.da.SearchCursor(buffer_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+                with arcpy.da.InsertCursor(tree_area_fc_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(tree_area_fc_2, ["SHAPE@"]) as cursor_2:
+                    for row in cursor:
+                        if row[1] <= 7.5:
+                            cursor_1.insertRow([row[0]])
+                        else:
+                            cursor_2.insertRow([row[0]])
+            del cursor, cursor_1, cursor_2  # Clean up cursor objects
+
+            messages.addMessage("Polygon feature class split into two based on area.")
+            # Minimum bounding geometry
+            messages.addMessage("Applying minimum bounding geometry...")
+            mbg_fc = "in_memory/mbg_fc"
+            arcpy.management.MinimumBoundingGeometry(tree_area_fc_2, mbg_fc, "RECTANGLE_BY_AREA", "None")
+            messages.addMessage("Minimum bounding geometry applied.")
+
+            # Generate tessellation
+            messages.addMessage("Generating tessellation...")
+            tessellation_fc = "in_memory/tessellation_fc"
+            extent = arcpy.Describe(tree_area_fc_2).extent
+            if extent.XMin is None or extent.YMin is None or extent.XMax is None or extent.YMax is None:
+                raise ValueError("Invalid extent values found.")
+            messages.addMessage("Extent values: XMin: {0}, YMin: {1}, XMax: {2}, YMax: {3}".format(extent.XMin, extent.YMin, extent.XMax, extent.YMax))
+            arcpy.management.GenerateTessellation(tessellation_fc, extent, "SQUARE", "5 SquareMeters")
+            messages.addMessage("Tessellation generated.")
+
+            # Pairwise intersect
+            messages.addMessage("Performing pairwise intersect...")
+            intersect_fc = "in_memory/intersect_fc"
+            arcpy.analysis.PairwiseIntersect([tessellation_fc, tree_area_fc_2], intersect_fc, join_attributes="ALL", cluster_tolerance=None, output_type="INPUT")
+            messages.addMessage("Pairwise intersect completed.")
+
+            # Merge clip_fc with tree_area_fc_1
+            messages.addMessage("Merging clip_fc with tree_area_fc_1...")
+            merged_fc = "in_memory/merged_fc"
+            arcpy.management.Merge([intersect_fc, tree_area_fc_1], merged_fc)
+            messages.addMessage("Merge completed.")
+            
+            # Convert multipart to single part
+            messages.addMessage("Converting multipart to single part...")
+            singlepart_fc = "in_memory/singlepart_fc"
+            arcpy.MultipartToSinglepart_management(merged_fc, singlepart_fc)
+            messages.addMessage("Multipart to single part conversion completed.")
+
+            # Add a field if it doesn't already exist
+            messages.addMessage("Adding and calculating a field for tree width...")
+            width_field = "Width"
+            if not arcpy.ListFields(singlepart_fc, width_field):
+                arcpy.AddField_management(singlepart_fc, width_field, "DOUBLE")
+            with arcpy.da.UpdateCursor(singlepart_fc, ["SHAPE@", width_field]) as cursor:
                 for row in cursor:
-                    if row[1] <= 50:
-                        cursor_1.insertRow([row[0]])
-                    else:
-                        cursor_2.insertRow([row[0]])
-        del cursor, cursor_1, cursor_2  # Clean up cursor objects
-                    
-        messages.addMessage("Polygon feature class split into two based on area.")
-        # Minimum bounding geometry
-        messages.addMessage("Applying minimum bounding geometry...")
-        mbg_fc = "in_memory/mbg_fc"
-        arcpy.management.MinimumBoundingGeometry(tree_area_fc_2, mbg_fc, "RECTANGLE_BY_AREA", "None")
-        messages.addMessage("Minimum bounding geometry applied.")
+                    polygon = row[0]  # Geometry object
+                    extent = polygon.extent  # Get the extent (bounding box)
+                    width = extent.width  # Width of the bounding box
+                    row[1] = width / 2  # Assign the width to the field
+                    cursor.updateRow(row)
 
-        # Subdivide polygon
-        messages.addMessage("Subdividing polygon...")
-        subdivide_fc = "in_memory/subdivide_fc"
-        arcpy.management.SubdividePolygon(mbg_fc, subdivide_fc, "EQUAL_AREAS", target_area="25 SquareMeters", subdivision_type="STACKED_BLOCKS")
-        messages.addMessage("Polygon subdivided.")
+            del cursor  # Clean up cursor object
 
-        # Pairwise intersect
-        messages.addMessage("Performing pairwise intersect...")
-        intersect_fc = "in_memory/intersect_fc"
-        arcpy.analysis.PairwiseIntersect([subdivide_fc, tree_area_fc_2], intersect_fc, join_attributes="ALL", cluster_tolerance=None, output_type="INPUT")
-        messages.addMessage("Pairwise intersect completed.")
+            messages.addMessage("Field for tree width added and calculated.")
+           
 
-        # Merge clip_fc with tree_area_fc_1
-        messages.addMessage("Merging clip_fc with tree_area_fc_1...")
-        merged_fc = "in_memory/merged_fc"
-        arcpy.management.Merge([intersect_fc, tree_area_fc_1], merged_fc)
-        messages.addMessage("Merge completed.")
+            # Feature to point
+            messages.addMessage("Converting features to points...")
+            points_fc = "in_memory/points_fc"
+            arcpy.management.FeatureToPoint(singlepart_fc, points_fc, "INSIDE")
+            messages.addMessage("Features converted to points.")
 
-        # Add a field if it doesn't already exist
-        messages.addMessage("Adding and calculating a field for tree width...")
-        width_field = "Width"
-        if not arcpy.ListFields(merged_fc, width_field):
-            arcpy.AddField_management(merged_fc, width_field, "DOUBLE")
-        with arcpy.da.UpdateCursor(merged_fc, ["SHAPE@", width_field]) as cursor:
-            for row in cursor:
-                polygon = row[0]  # Geometry object
-                extent = polygon.extent  # Get the extent (bounding box)
-                width = extent.width  # Width of the bounding box
-                row[1] = width / 3  # Assign the width to the field
-                cursor.updateRow(row)        
-        
-        del cursor  # Clean up cursor object
+            # Pairwise buffer
+            messages.addMessage("Applying pairwise buffer...")
+            buffer_fc_1 = "in_memory/buffer_fc_1"
+            arcpy.analysis.PairwiseBuffer(points_fc, buffer_fc_1, "Width", "NONE")
+            messages.addMessage("Pairwise buffer applied.")
 
-        messages.addMessage("Field for tree width added and calculated.")
+            # Delete all fields from the output buffer except the geometry field
+            messages.addMessage("Deleting all fields from the output buffer except the geometry field...")
+            fields = arcpy.ListFields(buffer_fc_1)
+            
+            drop_fields = [field.name for field in fields if field.type not in ('OID', 'Geometry') and field.name != 'Shape_Area' and field.name != 'Shape_Length' and field.name != field_name]      
+            if drop_fields:
+                arcpy.management.DeleteField(buffer_fc_1, drop_fields)
+            messages.addMessage("Fields deleted.")
 
-        # Feature to point
-        messages.addMessage("Converting features to points...")
-        points_fc = "in_memory/points_fc"
-        arcpy.management.FeatureToPoint(merged_fc, points_fc, "INSIDE")
-        messages.addMessage("Features converted to points.")
 
-        # Pairwise buffer
-        messages.addMessage("Applying pairwise buffer...")
-        buffer_fc = "in_memory/buffer_fc"
-        arcpy.analysis.PairwiseBuffer(points_fc, buffer_fc, "Width", "NONE")
-        messages.addMessage("Pairwise buffer applied.")
+            # Remove small polygons
+            messages.addMessage("Removing polygons with area less than 0.25 square meters...")
+            with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+                for row in cursor:
+                    if row[1] < 0.25:
+                        cursor.deleteRow()
+            del cursor  # Clean up cursor object
+            messages.addMessage("Small polygons removed.")
 
-        # Delete all fields from the output buffer except the geometry field
-        messages.addMessage("Deleting all fields from the output buffer except the geometry field...")
-        fields = arcpy.ListFields(buffer_fc)
-        drop_fields = [field.name for field in fields if field.type not in ('OID', 'Geometry')]
-        if drop_fields:
-            arcpy.management.DeleteField(buffer_fc, drop_fields)
-        messages.addMessage("Fields deleted.")
+            # Delete any fields that aren't in polygon_fc fields
+            messages.addMessage("Deleting fields that aren't in buffer_fc fields...")
+            buffer_fc_fields = [field.name for field in arcpy.ListFields(buffer_fc)]
+            output_fields = [field.name for field in arcpy.ListFields(buffer_fc_1)]
+            fields_to_delete = [field for field in output_fields if field not in buffer_fc_fields and field not in ('OID', 'Geometry', 'Shape_Length', 'Shape_Area', field_name)]
+           
+            with arcpy.da.UpdateCursor(buffer_fc_1, ["class"]) as cursor:
+                for row in cursor:
+                    row[0] = unique_value
+                    cursor.updateRow(row)
+            if fields_to_delete:
+                arcpy.management.DeleteField(buffer_fc_1, fields_to_delete)
+            else:
+                messages.addMessage("No fields to delete.")
+            messages.addMessage("Fields that aren't in polygon_fc fields deleted.")
 
-        # Perform spatial join with the initial raster to polygon output feature class
-        messages.addMessage("Performing spatial join with the initial raster to polygon output feature class...")
-        arcpy.analysis.SpatialJoin(buffer_fc, polygon_fc, output_feature_class, join_type="KEEP_COMMON", match_option="INTERSECT")
-        messages.addMessage("Spatial join completed.")
+            if first_iteration:
+                arcpy.management.CopyFeatures(buffer_fc_1, final_output_fc)
+                first_iteration = False
+            else:
+                # Perform spatial join with final output feature class
+                messages.addMessage("Performing spatial join with final output feature class...")
+                temp_spatial_join_fc = "in_memory/temp_spatial_join_fc"
+                arcpy.analysis.SpatialJoin(
+                    target_features=buffer_fc_1,
+                    join_features=final_output_fc,
+                    out_feature_class=temp_spatial_join_fc,
+                    join_operation="JOIN_ONE_TO_ONE",
+                    join_type="KEEP_ALL",
+                    match_option="INTERSECT",
+                    search_radius=None,
+                    distance_field_name="",
+                    match_fields=None
+                )
+                messages.addMessage("Spatial join with final output feature class completed.")
 
-        
-        # Remove small polygons
-        messages.addMessage("Removing polygons with area less than 1 square meters...")
-        with arcpy.da.UpdateCursor(output_feature_class, ["SHAPE@", "SHAPE@AREA"]) as cursor:
-            for row in cursor:
-                if row[1] < 1:
-                    cursor.deleteRow()
-        del cursor  # Clean up cursor object
+                # Delete attributes with Join_Count not None
+                messages.addMessage("Deleting attributes with Join_Count not None...")
+                with arcpy.da.SearchCursor(temp_spatial_join_fc, ["Join_Count", "SHAPE@"]) as search_cursor:
+                    with arcpy.da.InsertCursor(final_output_fc, ["SHAPE@"]) as insert_cursor:
+                        for row in search_cursor:
+                            if row[0] == 0:
+                                insert_cursor.insertRow([row[1]])
+                messages.addMessage("Attributes with Join_Count None inserted into the final output feature class.")
 
-        # Delete any fields that aren't in polygon_fc fields
-        messages.addMessage("Deleting fields that aren't in polygon_fc fields...")
-        polygon_fc_fields = [field.name for field in arcpy.ListFields(polygon_fc)]
-        output_fields = [field.name for field in arcpy.ListFields(output_feature_class)]
-        fields_to_delete = [field for field in output_fields if field not in polygon_fc_fields and field not in ('OID', 'Geometry', 'Shape_Length', 'Shape_Area')]
-        if fields_to_delete:
-            arcpy.management.DeleteField(output_feature_class, fields_to_delete)
-        else:
-            messages.addMessage("No fields to delete.")
-        messages.addMessage("Fields that aren't in polygon_fc fields deleted.")
-        messages.addMessage("Small polygons removed.")
+            # Delete intermediate layers
+            messages.addMessage("Deleting intermediate layers...")
+            arcpy.management.Delete([polygon_fc, buffer_fc, tree_area_fc_1, tree_area_fc_2, mbg_fc, tessellation_fc, intersect_fc, merged_fc, singlepart_fc, points_fc, buffer_fc_1])
+            messages.addMessage("Intermediate layers deleted.")
 
-        # Delete intermediate layers
-        messages.addMessage("Deleting intermediate layers...")
-        arcpy.management.Delete([polygon_fc, tree_area_fc_1, tree_area_fc_2, mbg_fc, subdivide_fc, intersect_fc, merged_fc, points_fc])
-        messages.addMessage("Intermediate layers deleted.")
+        # Copy final output to the specified output feature class
+        arcpy.management.CopyFeatures(final_output_fc, output_feature_class)
+
+        messages.addMessage("Final output copied to the specified output feature class.")
 
         messages.addMessage("Post-processing workflow completed successfully.")
 
