@@ -441,7 +441,7 @@ class PostDeepLearningTreeWorkflows(object):
             with arcpy.da.SearchCursor(buffer_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
                 with arcpy.da.InsertCursor(tree_area_fc_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(tree_area_fc_2, ["SHAPE@"]) as cursor_2:
                     for row in cursor:
-                        if row[1] <= 7.5:
+                        if row[1] <= 40:
                             cursor_1.insertRow([row[0]])
                         else:
                             cursor_2.insertRow([row[0]])
@@ -461,7 +461,7 @@ class PostDeepLearningTreeWorkflows(object):
             if extent.XMin is None or extent.YMin is None or extent.XMax is None or extent.YMax is None:
                 raise ValueError("Invalid extent values found.")
             messages.addMessage("Extent values: XMin: {0}, YMin: {1}, XMax: {2}, YMax: {3}".format(extent.XMin, extent.YMin, extent.XMax, extent.YMax))
-            arcpy.management.GenerateTessellation(tessellation_fc, extent, "SQUARE", "5 SquareMeters")
+            arcpy.management.GenerateTessellation(tessellation_fc, extent, "SQUARE", "40 SquareMeters")
             messages.addMessage("Tessellation generated.")
 
             # Pairwise intersect
@@ -526,7 +526,7 @@ class PostDeepLearningTreeWorkflows(object):
             messages.addMessage("Removing polygons with area less than 0.25 square meters...")
             with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
                 for row in cursor:
-                    if row[1] < 0.25:
+                    if row[1] < 1:
                         cursor.deleteRow()
             del cursor  # Clean up cursor object
             messages.addMessage("Small polygons removed.")
