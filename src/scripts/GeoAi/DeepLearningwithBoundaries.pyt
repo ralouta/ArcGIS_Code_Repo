@@ -104,9 +104,6 @@ class ClassifyPixelsUsingDeepLearning(object):
 
         params[-1].columns = [["GPString", "Name"], ["GPString", "Value"]]
 
-
-        # Add other parameters as needed...
-
         return params
 
     def isLicensed(self):
@@ -174,6 +171,8 @@ class ClassifyPixelsUsingDeepLearning(object):
                         os.remove(os.path.join(root, name))
                     for name in dirs:
                         os.rmdir(os.path.join(root, name))
+
+    
         return
 
     def updateMessages(self, parameters):
@@ -231,11 +230,12 @@ class ClassifyPixelsUsingDeepLearning(object):
             for i, extent in enumerate(extents, start=1):
                 messages.addMessage(f"Processing extent {i} of {total_extents}...")
                 arcpy.env.extent = extent
-                temp_output = os.path.join(gdb_path, f"classified_{extent.XMin}_{extent.YMin}")
+                temp_output = f"{gdb_path}\\classified_extent_{i}"
+                
                 
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
 
-                with arcpy.EnvManager(extent=extent, cellSize=2):
+                with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                     classified_raster = arcpy.ia.ClassifyPixelsUsingDeepLearning(
                         in_raster=in_raster,
                         in_model_definition=model_definition,
@@ -269,8 +269,12 @@ class ClassifyPixelsUsingDeepLearning(object):
         else:
             messages.addMessage("Area is less than or equal to 100 square kilometers. Running classification directly...")
 
+            # Use the extent of the processing geometry as the extent for the environment
+            extent = arcpy.Describe(processing_geometry).extent
+            arcpy.env.extent = extent
+
             # Run Classify Pixels Using Deep Learning directly
-            with arcpy.EnvManager(cellSize=2):
+            with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
                 classified_raster = arcpy.ia.ClassifyPixelsUsingDeepLearning(
                     in_raster=in_raster,
@@ -457,7 +461,6 @@ class DetectObjectsUsingDeepLearning(object):
             parameters[6].value = "confidence"
         if not parameters[7].altered:
             parameters[7].value = "classvalue"
-
         return
 
     def updateMessages(self, parameters):
@@ -476,13 +479,12 @@ class DetectObjectsUsingDeepLearning(object):
         class_value_field = parameters[7].valueAsText
         max_overlap_ratio = parameters[8].value
         use_pixelspace = parameters[9].value
-
         # Convert arguments to a dictionary, excluding deleted arguments
         arguments_dict = {arg[0]: arg[1] for arg in arguments if arg[1]}
 
         # Extract geodatabase path from the output detected objects
         gdb_path = os.path.dirname(out_detected_objects)
-
+        
         # Calculate the area of the processing geometry using a search cursor
         area = 0
         with arcpy.da.SearchCursor(processing_geometry, ["SHAPE@AREA"]) as cursor:
@@ -519,15 +521,12 @@ class DetectObjectsUsingDeepLearning(object):
             for i, extent in enumerate(extents, start=1):
                 messages.addMessage(f"Processing extent {i} of {total_extents}...")
                 arcpy.env.extent = extent
-                temp_output = os.path.join(gdb_path, f"detected_{extent.XMin}_{extent.YMin}")
-                
-                # Replace invalid characters in temp_output
-                temp_output = temp_output.replace(".", "_").replace("-", "_")
-                
+                temp_output = f"{gdb_path}\\detected_extent_{i}"
+            
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
 
-                with arcpy.EnvManager(extent=extent):
-                    out_classified_raster = arcpy.ia.DetectObjectsUsingDeepLearning(
+                with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
+                    arcpy.ia.DetectObjectsUsingDeepLearning(
                         in_raster=in_raster,
                         out_detected_objects=temp_output,
                         in_model_definition=model_definition,
@@ -538,8 +537,7 @@ class DetectObjectsUsingDeepLearning(object):
                         max_overlap_ratio=max_overlap_ratio if run_nms else None,
                         processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
                         use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
-                )
-                out_classified_raster.save("\\\\")
+                    )
                 output_features.append(temp_output)
 
             messages.addMessage("Detected objects for each extent. Merging output features...")
@@ -559,10 +557,14 @@ class DetectObjectsUsingDeepLearning(object):
         else:
             messages.addMessage("Area is less than or equal to 100 square kilometers. Running detection directly...")
 
+            # Use the extent of the processing geometry as the extent for the environment
+            extent = arcpy.Describe(processing_geometry).extent
+            arcpy.env.extent = extent
+
             # Run Detect Objects Using Deep Learning directly
-            with arcpy.EnvManager():
+            with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
-                out_classified_raster = arcpy.ia.DetectObjectsUsingDeepLearning(
+                arcpy.ia.DetectObjectsUsingDeepLearning(
                     in_raster=in_raster,
                     out_detected_objects=out_detected_objects,
                     in_model_definition=model_definition,
@@ -574,6 +576,7 @@ class DetectObjectsUsingDeepLearning(object):
                     processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
                     use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
                 )
-                out_classified_raster.save("\\\\")
+
+            messages.addMessage("Detection completed.")
 
         return
