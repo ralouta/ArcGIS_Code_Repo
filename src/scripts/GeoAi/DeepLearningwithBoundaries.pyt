@@ -529,7 +529,7 @@ class DetectObjectsUsingDeepLearning(object):
                 with arcpy.EnvManager(extent=extent):
                     out_classified_raster = arcpy.ia.DetectObjectsUsingDeepLearning(
                         in_raster=in_raster,
-                        out_detected_objects=out_detected_objects,
+                        out_detected_objects=temp_output,
                         in_model_definition=model_definition,
                         arguments=formatted_arguments,
                         run_nms="NMS" if run_nms else "NO_NMS",
