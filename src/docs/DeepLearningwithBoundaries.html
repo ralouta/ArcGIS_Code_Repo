@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deep Learning with Boundaries - Documentation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+        }
+        .code-block {
+            background-color: #f4f4f4;
+            border-left: 10px solid #ccc;
+            padding: 10px;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+        .screenshot {
+            display: block;
+            margin: 20px 0;
+            max-width: 100%;
+        }
+        .section-title {
+            color: #333;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Deep Learning with Boundaries - Documentation</h1>
+    <p>Welcome to the documentation for the Deep Learning with Boundaries tools. This guide will walk you through the setup, usage, and output of the tools, providing code snippets and placeholders for relevant screenshots.</p>
+
+    <h2 class="section-title">Toolbox Overview</h2>
+    <p>The toolbox contains two main tools:</p>
+    <ul>
+        <li>Classify Pixels Using Deep Learning</li>
+        <li>Detect Objects Using Deep Learning</li>
+    </ul>
+
+    <h2 class="section-title">Classify Pixels Using Deep Learning</h2>
+    <p>This tool classifies pixels using deep learning with additional processing geometry parameters.</p>
+
+    <h3>Parameters</h3>
+    <ul>
+        <li><strong>Input Raster:</strong> The raster dataset to be classified.</li>
+        <li><strong>Model Definition:</strong> The deep learning model definition file (.emd).</li>
+        <li><strong>Output Classified Raster:</strong> The output classified raster dataset.</li>
+        <li><strong>Processing Geometry:</strong> The geometry to be used for processing.</li>
+        <li><strong>Arguments:</strong> Additional arguments for the deep learning model.</li>
+        <li><strong>Tessellation Size (Square Kilometers):</strong> The size of the tessellation area in square kilometers.</li>
+    </ul>
+
+    <h3>Workflow Explanation</h3>
+    <p>The workflow for the Classify Pixels Using Deep Learning tool involves several key steps:</p>
+    <ol>
+        <li><strong>Define the Area of Interest (AOI):</strong> The user specifies the AOI using the processing geometry parameter. This ensures that only the relevant areas are processed, avoiding unnecessary computation on areas outside the AOI.</li>
+        <li><strong>Generate Tessellation Grid:</strong> Based on the user-defined tessellation size and model arguments (batch size and tile size), the tool generates a tessellation grid that divides the AOI into smaller, manageable extents.</li>
+        <li><strong>Spatial Join with AOI:</strong> The tessellation grid is spatially joined with the AOI to ensure that only the grid cells overlapping the AOI are processed.</li>
+        <li><strong>Classify Pixels:</strong> For each extent in the tessellation grid, the tool classifies the pixels using the deep learning model. The results are saved as individual raster datasets.</li>
+        <li><strong>Merge Results:</strong> The individual raster datasets are merged into a single output classified raster.</li>
+    </ol>
+
+    <h3>Intermediate Outputs</h3>
+    <p>During the workflow, several intermediate outputs are generated:</p>
+    <ul>
+        <li><strong>Tessellation Grid:</strong> The grid that divides the AOI into smaller extents.</li>
+        <li><strong>Spatially Joined Grid:</strong> The tessellation grid after being spatially joined with the AOI.</li>
+        <li><strong>Classified Raster Datasets:</strong> The individual raster datasets with classified pixels for each extent.</li>
+    </ul>
+    <img src="path/to/screenshot_intermediate1.png" alt="Tessellation Grid" class="screenshot">
+    <img src="path/to/screenshot_intermediate2.png" alt="Spatially Joined Grid" class="screenshot">
+    <img src="path/to/screenshot_intermediate3.png" alt="Classified Raster Datasets" class="screenshot">
+
+    <h3>Code Snippet</h3>
+    <div class="code-block">
+        <pre>
+class ClassifyPixelsUsingDeepLearning(object):
+    def __init__(self):
+        self.label = "Classify Pixels Using Deep Learning"
+        self.description = "Classify pixels using deep learning with additional processing geometry parameter."
+        self.canRunInBackground = False
+        self.error_message = None
+
+    def getParameterInfo(self):
+        params = []
+        # Define parameters here
+        return params
+
+    def isLicensed(self):
+        return True
+
+    def updateParameters(self, parameters):
+        self.error_message = None
+        # Update parameters here
+        return
+
+    def updateMessages(self, parameters):
+        if self.error_message:
+            parameters[1].setErrorMessage(self.error_message)
+        return
+
+    def execute(self, parameters, messages):
+        # Define the AOI
+        aoi = parameters[0].valueAsText
+        # Generate tessellation grid
+        tessellation_grid = generate_tessellation_grid(aoi, parameters)
+        # Spatial join with AOI
+        spatially_joined_grid = spatial_join_with_aoi(tessellation_grid, aoi)
+        # Classify pixels
+        classified_rasters = classify_pixels(spatially_joined_grid, parameters)
+        # Merge results
+        merged_results = merge_classified_rasters(classified_rasters)
+        return merged_results
+        </pre>
+    </div>
+
+    <h3>Code Snippet</h3>
+    <div class="code-block">
+        <pre>
+class ClassifyPixelsUsingDeepLearning(object):
+    def __init__(self):
+        self.label = "Classify Pixels Using Deep Learning"
+        self.description = "Classify pixels using deep learning with additional processing geometry parameter."
+        self.canRunInBackground = False
+        self.error_message = None
+
+    def getParameterInfo(self):
+        params = []
+        # ...existing code...
+        return params
+
+    def isLicensed(self):
+        return True
+
+    def updateParameters(self, parameters):
+        self.error_message = None
+        # ...existing code...
+        return
+
+    def updateMessages(self, parameters):
+        if self.error_message:
+            parameters[1].setErrorMessage(self.error_message)
+        return
+
+    def execute(self, parameters, messages):
+        # ...existing code...
+        return
+        </pre>
+    </div>
+
+    <h3>Screenshot Placeholder</h3>
+    <img src="path/to/screenshot1.png" alt="Classify Pixels Using Deep Learning Tool" class="screenshot">
+
+    <h2 class="section-title">Detect Objects Using Deep Learning</h2>
+    <p>This tool detects objects using deep learning with additional processing geometry parameters.</p>
+
+    <h3>Parameters</h3>
+    <ul>
+        <li><strong>Input Raster:</strong> The raster dataset to be processed.</li>
+        <li><strong>Model Definition:</strong> The deep learning model definition file (.emd).</li>
+        <li><strong>Output Detected Objects:</strong> The output feature class with detected objects.</li>
+        <li><strong>Processing Geometry:</strong> The geometry to be used for processing.</li>
+        <li><strong>Arguments:</strong> Additional arguments for the deep learning model.</li>
+        <li><strong>Run Non-Maximum Suppression (NMS):</strong> Whether to run NMS.</li>
+        <li><strong>Confidence Score Field:</strong> The field for confidence scores.</li>
+        <li><strong>Class Value Field:</strong> The field for class values.</li>
+        <li><strong>Max Overlap Ratio:</strong> The maximum overlap ratio for NMS.</li>
+        <li><strong>Use Pixel Space:</strong> Whether to use pixel space.</li>
+        <li><strong>Tessellation Size (Square Kilometers):</strong> The size of the tessellation area in square kilometers.</li>
+    </ul>
+
+    <h3>Workflow Explanation</h3>
+    <p>The workflow for the Detect Objects Using Deep Learning tool involves several key steps:</p>
+    <ol>
+        <li><strong>Define the Area of Interest (AOI):</strong> The user specifies the AOI using the processing geometry parameter. This ensures that only the relevant areas are processed, avoiding unnecessary computation on areas outside the AOI.</li>
+        <li><strong>Generate Tessellation Grid:</strong> Based on the user-defined tessellation size and model arguments (batch size and tile size), the tool generates a tessellation grid that divides the AOI into smaller, manageable extents.</li>
+        <li><strong>Spatial Join with AOI:</strong> The tessellation grid is spatially joined with the AOI to ensure that only the grid cells overlapping the AOI are processed.</li>
+        <li><strong>Detect Objects:</strong> For each extent in the tessellation grid, the tool detects objects using the deep learning model. The results are saved as individual feature classes.</li>
+        <li><strong>Merge Results:</strong> The individual feature classes are merged into a single output feature class with detected objects.</li>
+    </ol>
+
+    <h3>Intermediate Outputs</h3>
+    <p>During the workflow, several intermediate outputs are generated:</p>
+    <ul>
+        <li><strong>Tessellation Grid:</strong> The grid that divides the AOI into smaller extents.</li>
+        <li><strong>Spatially Joined Grid:</strong> The tessellation grid after being spatially joined with the AOI.</li>
+        <li><strong>Detected Objects Feature Classes:</strong> The individual feature classes with detected objects for each extent.</li>
+    </ul>
+    <img src="path/to/screenshot_intermediate1.png" alt="Tessellation Grid" class="screenshot">
+    <img src="path/to/screenshot_intermediate2.png" alt="Spatially Joined Grid" class="screenshot">
+    <img src="path/to/screenshot_intermediate3.png" alt="Detected Objects Feature Classes" class="screenshot">
+
+    <h3>Code Snippet</h3>
+    <div class="code-block">
+        <pre>
+class DetectObjectsUsingDeepLearning(object):
+    def __init__(self):
+        self.label = "Detect Objects Using Deep Learning"
+        self.description = "Detect objects using deep learning with additional processing geometry parameter."
+        self.canRunInBackground = False
+        self.error_message = None
+
+    def getParameterInfo(self):
+        params = []
+        # Define parameters here
+        return params
+
+    def isLicensed(self):
+        return True
+
+    def updateParameters(self, parameters):
+        self.error_message = None
+        # Update parameters here
+        return
+
+    def updateMessages(self, parameters):
+        if self.error_message:
+            parameters[1].setErrorMessage(self.error_message)
+        return
+
+    def execute(self, parameters, messages):
+        # Define the AOI
+        aoi = parameters[0].valueAsText
+        # Generate tessellation grid
+        tessellation_grid = generate_tessellation_grid(aoi, parameters)
+        # Spatial join with AOI
+        spatially_joined_grid = spatial_join_with_aoi(tessellation_grid, aoi)
+        # Detect objects
+        detected_objects = detect_objects(spatially_joined_grid, parameters)
+        # Merge results
+        merged_results = merge_detected_objects(detected_objects)
+        return merged_results
+        </pre>
+    </div>
+    <h3>Code Snippet</h3>
+    <div class="code-block">
+        <pre>
+    class DetectObjectsUsingDeepLearning(object):
+        def __init__(self):
+            self.label = "Detect Objects Using Deep Learning"
+            self.description = "Detect objects using deep learning with additional processing geometry parameter."
+            self.canRunInBackground = False
+            self.error_message = None
+
+        def getParameterInfo(self):
+            params = []
+            # ...existing code...
+            return params
+
+        def isLicensed(self):
+            return True
+
+        def updateParameters(self, parameters):
+            self.error_message = None
+            # ...existing code...
+            return
+
+        def updateMessages(self, parameters):
+            if self.error_message:
+                parameters[1].setErrorMessage(self.error_message)
+            return
+
+        def execute(self, parameters, messages):
+            # ...existing code...
+            return
+        </pre>
+    </div>
+
+    <h3>Screenshot Placeholder</h3>
+    <img src="path/to/screenshot2.png" alt="Detect Objects Using Deep Learning Tool" class="screenshot">
+
+    <h2 class="section-title">Output Explanation</h2>
+    <p>The output of the tools includes classified rasters and detected objects feature classes. The results are saved in the specified output locations.</p>
+
+    <h3>Classified Raster Output</h3>
+    <p>The classified raster output contains the pixel classifications based on the deep learning model.</p>
+    <img src="path/to/screenshot3.png" alt="Classified Raster Output" class="screenshot">
+
+    <h3>Detected Objects Output</h3>
+    <p>The detected objects output contains the feature class with detected objects, including confidence scores and class values.</p>
+    <img src="path/to/screenshot4.png" alt="Detected Objects Output" class="screenshot">
+
+    <h2 class="section-title">Conclusion</h2>
+    <p>We hope this documentation helps you understand and use the Deep Learning with Boundaries tools effectively. If you have any questions or need further assistance, please refer to the official documentation or contact support.</p>
+</body>
+</html>

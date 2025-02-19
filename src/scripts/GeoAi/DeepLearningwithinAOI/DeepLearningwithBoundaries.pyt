@@ -44,8 +44,8 @@ class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
-        self.label = "Post Deep Learning Workflows"
-        self.alias = "Toolbox for post-processing deep learning results"
+        self.label = "Deep Learning process with boundaries"
+        self.alias = "DeepLearningwithBoundaries"
 
         # List of tool classes associated with this toolbox
         self.tools = [
@@ -103,7 +103,6 @@ class ClassifyPixelsUsingDeepLearning(object):
             direction="Input"))
 
         params[-1].columns = [["GPString", "Name"], ["GPString", "Value"]]
-
         return params
 
     def isLicensed(self):
@@ -171,12 +170,9 @@ class ClassifyPixelsUsingDeepLearning(object):
                         os.remove(os.path.join(root, name))
                     for name in dirs:
                         os.rmdir(os.path.join(root, name))
-
-    
         return
 
     def updateMessages(self, parameters):
-        
         if self.error_message:
             parameters[1].setErrorMessage(self.error_message)
         return
@@ -196,33 +192,65 @@ class ClassifyPixelsUsingDeepLearning(object):
 
         # Calculate the area of the processing geometry using a search cursor
         area = 0
-        with arcpy.da.SearchCursor(processing_geometry, ["SHAPE@AREA"]) as cursor:
-            for row in cursor:
-                area += row[0] / 1e6  # Convert square meters to square kilometers
-
+        extent = arcpy.Describe(processing_geometry).extent
+        area = (extent.width * extent.height) / 1e6  # Convert square meters to square kilometers
+        
         messages.addMessage(f"Processing geometry area: {area:.2f} square kilometers")
+        
+        # Calculate the tile area
+        tile_size = int(arguments_dict.get("tile_size", 256))
+        cell_size = arcpy.env.cellSize
+        tile_area = (int(tile_size) * float(cell_size)) ** 2 / 1e6  # Convert to square kilometers
 
-        if area > 100:
-            messages.addMessage("Area is greater than 100 square kilometers. Generating tessellation...")
+         # Calculate the tessellation area based on batch size and tile area
+        batch_size = int(arguments_dict.get("batch_size", 4))
+        tessellation_area = ((batch_size ** 4) * tile_area)
+
+        messages.addMessage(
+            f"Calculated tessellation area: {tessellation_area:.2f} square kilometers.\n"
+            f"This area is determined based on the batch size and tile size specified in the model arguments.\n"
+            f"The tessellation area represents the total area that will be processed in each batch during the object detection process.\n"
+            f"Specifically, it is calculated as the area of a single tile (tile_size * cell_size)^2 multiplied by the number of tiles in a batch (batch_size^4).\n"
+            f"For example, with a tile size of {tile_size} pixels and a batch size of {batch_size}, the tessellation area covers {batch_size ** 3} tiles."
+        )
+
+        if area > tessellation_area:
+            messages.addMessage(f"Area is greater than {tessellation_area} square kilometers. Generating tessellation...")
 
             # Generate tessellation
             tessellation_output = os.path.join(gdb_path, "tessellation")
             arcpy.management.GenerateTessellation(
-                tessellation_output, processing_geometry, "SQUARE", "100 SquareKilometers")
+                tessellation_output, processing_geometry, "SQUARE", f"{tessellation_area} SquareKilometers")
 
             messages.addMessage("Tessellation generated. Performing spatial join...")
 
             # Spatial join tessellation with processing geometry
             spatial_join_output = os.path.join(gdb_path, "spatial_join")
             arcpy.analysis.SpatialJoin(tessellation_output, processing_geometry, spatial_join_output)
+            
+            # Delete features with Join_Count > 1
+            with arcpy.da.UpdateCursor(spatial_join_output, ["Join_Count"]) as cursor:
+                for row in cursor:
+                    if row[0] == 0:
+                        cursor.deleteRow()
+            del cursor
+            arcpy.management.RecalculateFeatureClassExtent(in_features=spatial_join_output)
 
-            messages.addMessage("Spatial join completed. Extracting extents...")
+            messages.addMessage("Spatial join completed. Buffering spatial join output...")
 
-            # Get extents for each polygon in the spatial join output
-            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"], where_clause="Join_Count > 0") as cursor:
+            # # Buffer the spatial join output by -1 km
+            # buffered_output = os.path.join(gdb_path, "buffered_spatial_join")
+            # arcpy.analysis.Buffer(spatial_join_output, buffered_output, f"-{(tessellation_area/25)} Kilometers")
+
+            # messages.addMessage("Buffering completed. Extracting extents...")
+
+            # Get extents for each polygon in the buffered output
+            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"]) as cursor:
                 extents = [row[0].extent for row in cursor if row[0]]
+            del cursor
 
             messages.addMessage(f"Number of extents to process: {len(extents)}")
+
 
             # Run Classify Pixels Using Deep Learning for each extent
             output_rasters = []
@@ -262,12 +290,13 @@ class ClassifyPixelsUsingDeepLearning(object):
             # Clean up intermediate data
             arcpy.management.Delete(tessellation_output)
             arcpy.management.Delete(spatial_join_output)
+            arcpy.management.Delete(buffered_output)
             for raster in output_rasters:
                 arcpy.management.Delete(raster)
 
             messages.addMessage("Intermediate data cleaned up.")
         else:
-            messages.addMessage("Area is less than or equal to 100 square kilometers. Running classification directly...")
+            messages.addMessage(f"Area is less than or equal to {tessellation_area} square kilometers. Running classification directly...")
 
             # Use the extent of the processing geometry as the extent for the environment
             extent = arcpy.Describe(processing_geometry).extent
@@ -377,7 +406,6 @@ class DetectObjectsUsingDeepLearning(object):
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-
         return params
 
     def isLicensed(self):
@@ -479,6 +507,7 @@ class DetectObjectsUsingDeepLearning(object):
         class_value_field = parameters[7].valueAsText
         max_overlap_ratio = parameters[8].value
         use_pixelspace = parameters[9].value
+
         # Convert arguments to a dictionary, excluding deleted arguments
         arguments_dict = {arg[0]: arg[1] for arg in arguments if arg[1]}
 
@@ -487,31 +516,62 @@ class DetectObjectsUsingDeepLearning(object):
         
         # Calculate the area of the processing geometry using a search cursor
         area = 0
-        with arcpy.da.SearchCursor(processing_geometry, ["SHAPE@AREA"]) as cursor:
-            for row in cursor:
-                area += row[0] / 1e6  # Convert square meters to square kilometers
+        extent = arcpy.Describe(processing_geometry).extent
+        area = (extent.width * extent.height) / 1e6  # Convert square meters to square kilometers
 
-        messages.addMessage(f"Processing geometry area: {area:.2f} square kilometers")
+        messages.addMessage(f"Processing geometry extent: {area:.2f} square kilometers")
+        
+        # Calculate the tile area
+        tile_size = int(arguments_dict.get("tile_size", 256))
+        cell_size = arcpy.env.cellSize
+        tile_area = (int(tile_size) * float(cell_size)) ** 2 / 1e6  # Convert to square kilometers
 
-        if area > 100:
-            messages.addMessage("Area is greater than 100 square kilometers. Generating tessellation...")
+         # Calculate the tessellation area based on batch size and tile area
+        batch_size = int(arguments_dict.get("batch_size", 4))
+        tessellation_area = ((batch_size ** 4) * tile_area)
+
+        messages.addMessage(
+            f"Calculated tessellation area: {tessellation_area:.2f} square kilometers.\n"
+            f"This area is determined based on the batch size and tile size specified in the model arguments.\n"
+            f"The tessellation area represents the total area that will be processed in each batch during the object detection process.\n"
+            f"Specifically, it is calculated as the area of a single tile (tile_size * cell_size)^2 multiplied by the number of tiles in a batch (batch_size^4).\n"
+            f"For example, with a tile size of {tile_size} pixels and a batch size of {batch_size}, the tessellation area covers {batch_size ** 3} tiles."
+        )
+
+        if area > tessellation_area:
+            messages.addMessage(f"Area is greater than {tessellation_area} square kilometers. Generating tessellation...")
 
             # Generate tessellation
             tessellation_output = os.path.join(gdb_path, "tessellation")
             arcpy.management.GenerateTessellation(
-                tessellation_output, processing_geometry, "SQUARE", "100 SquareKilometers")
+                tessellation_output, processing_geometry, "SQUARE", f"{tessellation_area} SquareKilometers")
 
             messages.addMessage("Tessellation generated. Performing spatial join...")
 
             # Spatial join tessellation with processing geometry
             spatial_join_output = os.path.join(gdb_path, "spatial_join")
             arcpy.analysis.SpatialJoin(tessellation_output, processing_geometry, spatial_join_output)
+            
+            # Delete features with Join_Count > 1
+            with arcpy.da.UpdateCursor(spatial_join_output, ["Join_Count"]) as cursor:
+                for row in cursor:
+                    if row[0] == 0:
+                        cursor.deleteRow()
+            del cursor
+            arcpy.management.RecalculateFeatureClassExtent(in_features=spatial_join_output)
 
-            messages.addMessage("Spatial join completed. Extracting extents...")
+            messages.addMessage("Spatial join completed. Buffering spatial join output...")
 
-            # Get extents for each polygon in the spatial join output
-            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"], where_clause="Join_Count > 0") as cursor:
+            # # Buffer the spatial join output by -1 km
+            # buffered_output = os.path.join(gdb_path, "buffered_spatial_join")
+            # arcpy.analysis.Buffer(spatial_join_output, buffered_output, f"-{(tessellation_area/25)} Kilometers")
+
+            # messages.addMessage("Buffering completed. Extracting extents...")
+
+            # Get extents for each polygon in the buffered output
+            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"]) as cursor:
                 extents = [row[0].extent for row in cursor if row[0]]
+            del cursor
 
             messages.addMessage(f"Number of extents to process: {len(extents)}")
 
@@ -521,10 +581,10 @@ class DetectObjectsUsingDeepLearning(object):
             for i, extent in enumerate(extents, start=1):
                 messages.addMessage(f"Processing extent {i} of {total_extents}...")
                 arcpy.env.extent = extent
+                #messages.addMessage(f"Extent: {extent.XMin}, {extent.YMin}, {extent.XMax}, {extent.YMax}, {extent.spatialReference.name}")
                 temp_output = f"{gdb_path}\\detected_extent_{i}"
             
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
-
                 with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                     arcpy.ia.DetectObjectsUsingDeepLearning(
                         in_raster=in_raster,
@@ -550,12 +610,13 @@ class DetectObjectsUsingDeepLearning(object):
             # Clean up intermediate data
             arcpy.management.Delete(tessellation_output)
             arcpy.management.Delete(spatial_join_output)
+            arcpy.management.Delete(buffered_output)
             for feature in output_features:
                 arcpy.management.Delete(feature)
 
             messages.addMessage("Intermediate data cleaned up.")
         else:
-            messages.addMessage("Area is less than or equal to 100 square kilometers. Running detection directly...")
+            messages.addMessage(f"Area is less than or equal to {tessellation_area} square kilometers. Running detection directly...")
 
             # Use the extent of the processing geometry as the extent for the environment
             extent = arcpy.Describe(processing_geometry).extent
