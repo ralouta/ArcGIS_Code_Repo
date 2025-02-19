@@ -224,33 +224,26 @@ class ClassifyPixelsUsingDeepLearning(object):
 
             messages.addMessage("Tessellation generated. Performing spatial join...")
 
-            # Spatial join tessellation with processing geometry
-            spatial_join_output = os.path.join(gdb_path, "spatial_join")
-            arcpy.analysis.SpatialJoin(tessellation_output, processing_geometry, spatial_join_output)
-            
-            # Delete features with Join_Count > 1
-            with arcpy.da.UpdateCursor(spatial_join_output, ["Join_Count"]) as cursor:
-                for row in cursor:
-                    if row[0] == 0:
-                        cursor.deleteRow()
-            del cursor
-            arcpy.management.RecalculateFeatureClassExtent(in_features=spatial_join_output)
+            # Clip tessellation with processing geometry
+            clipped_tessellation_output = os.path.join(gdb_path, "clipped_tessellation")
+            arcpy.analysis.Clip(
+                in_features=tessellation_output,
+                clip_features=processing_geometry,
+                out_feature_class=clipped_tessellation_output,
+                cluster_tolerance=None
+            )
 
-            messages.addMessage("Spatial join completed. Buffering spatial join output...")
+            messages.addMessage("Clipping completed. Extracting extents...")
 
-            # # Buffer the spatial join output by -1 km
-            # buffered_output = os.path.join(gdb_path, "buffered_spatial_join")
-            # arcpy.analysis.Buffer(spatial_join_output, buffered_output, f"-{(tessellation_area/25)} Kilometers")
-
-            # messages.addMessage("Buffering completed. Extracting extents...")
-
-            # Get extents for each polygon in the buffered output
-            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"]) as cursor:
+            # Get extents for each polygon in the clipped tessellation output
+            with arcpy.da.SearchCursor(clipped_tessellation_output, ["SHAPE@"]) as cursor:
                 extents = [row[0].extent for row in cursor if row[0]]
             del cursor
 
-            messages.addMessage(f"Number of extents to process: {len(extents)}")
+            #Update feature class extent
+            arcpy.management.RecalculateFeatureClassExtent(clipped_tessellation_output)
 
+            messages.addMessage(f"Number of extents to process: {len(extents)}")
 
             # Run Classify Pixels Using Deep Learning for each extent
             output_rasters = []
@@ -289,8 +282,7 @@ class ClassifyPixelsUsingDeepLearning(object):
 
             # Clean up intermediate data
             arcpy.management.Delete(tessellation_output)
-            arcpy.management.Delete(spatial_join_output)
-            arcpy.management.Delete(buffered_output)
+            arcpy.management.Delete(clipped_tessellation_output)
             for raster in output_rasters:
                 arcpy.management.Delete(raster)
 
@@ -547,29 +539,22 @@ class DetectObjectsUsingDeepLearning(object):
                 tessellation_output, processing_geometry, "SQUARE", f"{tessellation_area} SquareKilometers")
 
             messages.addMessage("Tessellation generated. Performing spatial join...")
+            # Clip tessellation with processing geometry
+            clipped_tessellation_output = os.path.join(gdb_path, "clipped_tessellation")
+            arcpy.analysis.Clip(
+                in_features=tessellation_output,
+                clip_features=processing_geometry,
+                out_feature_class=clipped_tessellation_output,
+                cluster_tolerance=None
+            )
 
-            # Spatial join tessellation with processing geometry
-            spatial_join_output = os.path.join(gdb_path, "spatial_join")
-            arcpy.analysis.SpatialJoin(tessellation_output, processing_geometry, spatial_join_output)
-            
-            # Delete features with Join_Count > 1
-            with arcpy.da.UpdateCursor(spatial_join_output, ["Join_Count"]) as cursor:
-                for row in cursor:
-                    if row[0] == 0:
-                        cursor.deleteRow()
-            del cursor
-            arcpy.management.RecalculateFeatureClassExtent(in_features=spatial_join_output)
+            #Update feature class extent
+            arcpy.management.RecalculateFeatureClassExtent(clipped_tessellation_output)
 
-            messages.addMessage("Spatial join completed. Buffering spatial join output...")
+            messages.addMessage("Clipping completed. Extracting extents...")
 
-            # # Buffer the spatial join output by -1 km
-            # buffered_output = os.path.join(gdb_path, "buffered_spatial_join")
-            # arcpy.analysis.Buffer(spatial_join_output, buffered_output, f"-{(tessellation_area/25)} Kilometers")
-
-            # messages.addMessage("Buffering completed. Extracting extents...")
-
-            # Get extents for each polygon in the buffered output
-            with arcpy.da.SearchCursor(spatial_join_output, ["SHAPE@"]) as cursor:
+            # Get extents for each polygon in the clipped tessellation output
+            with arcpy.da.SearchCursor(clipped_tessellation_output, ["SHAPE@"]) as cursor:
                 extents = [row[0].extent for row in cursor if row[0]]
             del cursor
 
@@ -609,8 +594,8 @@ class DetectObjectsUsingDeepLearning(object):
 
             # Clean up intermediate data
             arcpy.management.Delete(tessellation_output)
-            arcpy.management.Delete(spatial_join_output)
-            arcpy.management.Delete(buffered_output)
+            arcpy.management.Delete(clipped_tessellation_output)
+            
             for feature in output_features:
                 arcpy.management.Delete(feature)
 

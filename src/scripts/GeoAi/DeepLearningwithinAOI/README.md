@@ -26,7 +26,7 @@ This tool classifies pixels using deep learning with additional processing geome
 The workflow for the Classify Pixels Using Deep Learning tool involves several key steps:
 1. **Define the Area of Interest (AOI):** The user specifies the AOI using the processing geometry parameter. This ensures that only the relevant areas are processed, avoiding unnecessary computation on areas outside the AOI.
 2. **Generate Tessellation Grid:** Based on the user-defined tessellation size and model arguments (batch size and tile size), the tool generates a tessellation grid that divides the AOI into smaller, manageable extents.
-3. **Spatial Join with AOI:** The tessellation grid is spatially joined with the AOI to ensure that only the grid cells overlapping the AOI are processed.
+3. **Clip with AOI:** The tessellation grid is clipped with the AOI to ensure that only the grid cells overlapping the AOI are processed.
 4. **Classify Pixels:** For each extent in the tessellation grid, the tool classifies the pixels using the deep learning model. The results are saved as individual raster datasets.
 5. **Merge Results:** The individual raster datasets are merged into a single output classified raster.
 
@@ -34,7 +34,7 @@ The workflow for the Classify Pixels Using Deep Learning tool involves several k
 
 During the workflow, several intermediate outputs are generated:
 - **Tessellation Grid:** The grid that divides the AOI into smaller extents.
-- **Spatially Joined Grid:** The tessellation grid after being spatially joined with the AOI.
+- **Clipped Grid:** The tessellation grid after being clipped with the AOI.
 - **Classified Raster Datasets:** The individual raster datasets with classified pixels for each extent.
 
 ### Code Snippet
@@ -70,10 +70,10 @@ class ClassifyPixelsUsingDeepLearning(object):
         aoi = parameters[0].valueAsText
         # Generate tessellation grid
         tessellation_grid = generate_tessellation_grid(aoi, parameters)
-        # Spatial join with AOI
-        spatially_joined_grid = spatial_join_with_aoi(tessellation_grid, aoi)
+        # Clip with AOI
+        clipped_grid = clip_with_aoi(tessellation_grid, aoi)
         # Classify pixels
-        classified_rasters = classify_pixels(spatially_joined_grid, parameters)
+        classified_rasters = classify_pixels(clipped_grid, parameters)
         # Merge results
         merged_results = merge_classified_rasters(classified_rasters)
         return merged_results
@@ -102,7 +102,7 @@ This tool detects objects using deep learning with additional processing geometr
 The workflow for the Detect Objects Using Deep Learning tool involves several key steps:
 1. **Define the Area of Interest (AOI):** The user specifies the AOI using the processing geometry parameter. This ensures that only the relevant areas are processed, avoiding unnecessary computation on areas outside the AOI.
 2. **Generate Tessellation Grid:** Based on the user-defined tessellation size and model arguments (batch size and tile size), the tool generates a tessellation grid that divides the AOI into smaller, manageable extents.
-3. **Spatial Join with AOI:** The tessellation grid is spatially joined with the AOI to ensure that only the grid cells overlapping the AOI are processed.
+3. **Clip with AOI:** The tessellation grid is clipped with the AOI to ensure that only the grid cells overlapping the AOI are processed.
 4. **Detect Objects:** For each extent in the tessellation grid, the tool detects objects using the deep learning model. The results are saved as individual feature classes.
 5. **Merge Results:** The individual feature classes are merged into a single output feature class with detected objects.
 
@@ -110,7 +110,7 @@ The workflow for the Detect Objects Using Deep Learning tool involves several ke
 
 During the workflow, several intermediate outputs are generated:
 - **Tessellation Grid:** The grid that divides the AOI into smaller extents.
-- **Spatially Joined Grid:** The tessellation grid after being spatially joined with the AOI.
+- **Clipped Grid:** The tessellation grid after being clipped with the AOI.
 - **Detected Objects Feature Classes:** The individual feature classes with detected objects for each extent.
 
 ### Code Snippet
@@ -136,37 +136,4 @@ class DetectObjectsUsingDeepLearning(object):
         # Update parameters here
         return
 
-    def updateMessages(self, parameters):
-        if self.error_message:
-            parameters[1].setErrorMessage(self.error_message)
-        return
-
-    def execute(self, parameters, messages):
-        # Define the AOI
-        aoi = parameters[0].valueAsText
-        # Generate tessellation grid
-        tessellation_grid = generate_tessellation_grid(aoi, parameters)
-        # Spatial join with AOI
-        spatially_joined_grid = spatial_join_with_aoi(tessellation_grid, aoi)
-        # Detect objects
-        detected_objects = detect_objects(spatially_joined_grid, parameters)
-        # Merge results
-        merged_results = merge_detected_objects(detected_objects)
-        return merged_results
-```
-
-## Output Explanation
-
-The output of the tools includes classified rasters and detected objects feature classes. The results are saved in the specified output locations.
-
-### Classified Raster Output
-
-The classified raster output contains the pixel classifications based on the deep learning model.
-
-### Detected Objects Output
-
-The detected objects output contains the feature class with detected objects, including confidence scores and class values.
-
-## Conclusion
-
-We hope this documentation helps you understand and use the Deep Learning with Boundaries tools effectively. If you have any questions or need further assistance, please refer to the official documentation or contact support.
+    def updateMessages(self,
