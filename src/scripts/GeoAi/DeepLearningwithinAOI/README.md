@@ -2,6 +2,8 @@
 
 Welcome to the documentation for the Deep Learning with Boundaries tools. This guide will walk you through the setup, usage, and output of the tools, providing code snippets and placeholders for relevant screenshots.
 
+![Deep Learning with AOI Features](https://esriis-my.sharepoint.com/personal/rami8629_esri_com/Documents/NPGO/WFP/Lebanon/Resources/Custom%20Script%20-%20Deep%20Learning%20With%20AOI%20Features.jpg)
+
 ## Toolbox Overview
 
 The toolbox contains two main tools:
