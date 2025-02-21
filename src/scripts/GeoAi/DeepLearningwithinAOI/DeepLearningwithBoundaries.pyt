@@ -573,124 +573,128 @@ class DetectObjectsUsingDeepLearning(object):
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
 
                 out_detected_objects_mbg = f"{gdb_path}\\{os.path.basename(out_detected_objects)}_mbg"
-                if i == 1 and not arcpy.Exists(temp_output):
-                # if i == 1:
-                    with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
-                        arcpy.ia.DetectObjectsUsingDeepLearning(
-                            in_raster=in_raster,
-                            out_detected_objects=out_detected_objects,
-                            in_model_definition=model_definition,
-                            arguments=formatted_arguments,
-                            run_nms="NMS" if run_nms else "NO_NMS",
-                            confidence_score_field=confidence_score_field if run_nms else None,
-                            class_value_field=class_value_field if run_nms else None,
-                            max_overlap_ratio=max_overlap_ratio if run_nms else None,
-                            processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
-                            use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
+                if not arcpy.Exists(temp_output):
+                    if i == 1:
+                    # if i == 1:
+                        with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
+                            arcpy.ia.DetectObjectsUsingDeepLearning(
+                                in_raster=in_raster,
+                                out_detected_objects=temp_output,
+                                in_model_definition=model_definition,
+                                arguments=formatted_arguments,
+                                run_nms="NMS" if run_nms else "NO_NMS",
+                                confidence_score_field=confidence_score_field if run_nms else None,
+                                class_value_field=class_value_field if run_nms else None,
+                                max_overlap_ratio=max_overlap_ratio if run_nms else None,
+                                processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
+                                use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
+                            )
+                        output_features.append(temp_output)
+                        #Repair feature geometry
+                        arcpy.management.RepairGeometry(temp_output)
+                        #Update feature extent
+                        arcpy.management.RecalculateFeatureClassExtent(temp_output)
+                        
+                        #make temp_output a layer
+                        arcpy.management.MinimumBoundingGeometry(
+                            in_features=temp_output,
+                            out_feature_class=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
+                            geometry_type="ENVELOPE",
+                            group_option="ALL",
+                            group_field=None,
+                            mbg_fields_option="NO_MBG_FIELDS"
                         )
-                    arcpy.management.CopyFeatures(out_detected_objects, temp_output)
-                    output_features.append(temp_output)
-                    #Repair feature geometry
-                    arcpy.management.RepairGeometry(temp_output)
-                    #Update feature extent
-                    arcpy.management.RecalculateFeatureClassExtent(temp_output)
-                    
-                    #make temp_output a layer
-                    arcpy.management.MinimumBoundingGeometry(
-                        in_features=temp_output,
-                        out_feature_class=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
-                        geometry_type="ENVELOPE",
-                        group_option="ALL",
-                        group_field=None,
-                        mbg_fields_option="NO_MBG_FIELDS"
-                    )
-                    arcpy.management.Delete(f"temp_output_{i}")
-                    arcpy.management.CopyFeatures(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"), out_detected_objects_mbg)
-                    arcpy.management.Delete(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"))
+                        arcpy.management.CopyFeatures(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"), out_detected_objects_mbg)
+                        arcpy.management.Delete(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"))
 
-                elif i > 1 and not arcpy.Exists(temp_output):
-                    
+                    elif i > 1:
                         
-                    # Check if the extent is completely within the minimum bounding geometry
-                    mbg_polygons = []
-                    with arcpy.da.SearchCursor(out_detected_objects_mbg, ["SHAPE@"]) as mbg_cursor:
-                        for mbg_row in mbg_cursor:
-                            mbg_polygons.append(mbg_row[0])
-                    del mbg_cursor
+                            
+                        # Check if the extent is completely within the minimum bounding geometry
+                        mbg_polygons = []
+                        with arcpy.da.SearchCursor(out_detected_objects_mbg, ["SHAPE@"]) as mbg_cursor:
+                            for mbg_row in mbg_cursor:
+                                mbg_polygons.append(mbg_row[0])
+                        del mbg_cursor
 
-                    if mbg_polygons:
-                        extent_polygon = arcpy.Polygon(arcpy.Array([
-                            arcpy.Point(extent.XMin, extent.YMax),
-                            arcpy.Point(extent.XMax, extent.YMax),
-                            arcpy.Point(extent.XMax, extent.YMin),
-                            arcpy.Point(extent.XMin, extent.YMin)
-                        ]), extent.spatialReference)
+                        if mbg_polygons:
+                            extent_polygon = arcpy.Polygon(arcpy.Array([
+                                arcpy.Point(extent.XMin, extent.YMax),
+                                arcpy.Point(extent.XMax, extent.YMax),
+                                arcpy.Point(extent.XMax, extent.YMin),
+                                arcpy.Point(extent.XMin, extent.YMin)
+                            ]), extent.spatialReference)
 
-                        if any(extent_polygon.within(mbg_polygon) for mbg_polygon in mbg_polygons):
-                            continue
-                        
-                        
-                    with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
-                        arcpy.ia.DetectObjectsUsingDeepLearning(
-                            in_raster=in_raster,
-                            out_detected_objects=temp_output,
-                            in_model_definition=model_definition,
-                            arguments=formatted_arguments,
-                            run_nms="NMS" if run_nms else "NO_NMS",
-                            confidence_score_field=confidence_score_field if run_nms else None,
-                            class_value_field=class_value_field if run_nms else None,
-                            max_overlap_ratio=max_overlap_ratio if run_nms else None,
-                            processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
-                            use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
+                            if any(extent_polygon.within(mbg_polygon) for mbg_polygon in mbg_polygons):
+                                continue
+                            
+                            
+                        with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
+                            arcpy.ia.DetectObjectsUsingDeepLearning(
+                                in_raster=in_raster,
+                                out_detected_objects=temp_output,
+                                in_model_definition=model_definition,
+                                arguments=formatted_arguments,
+                                run_nms="NMS" if run_nms else "NO_NMS",
+                                confidence_score_field=confidence_score_field if run_nms else None,
+                                class_value_field=class_value_field if run_nms else None,
+                                max_overlap_ratio=max_overlap_ratio if run_nms else None,
+                                processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
+                                use_pixelspace="PIXELSPACE" if use_pixelspace else "NO_PIXELSPACE"
+                            )
+                        arcpy.management.Append(
+                            inputs=temp_output,
+                            target=out_detected_objects,
+                            schema_type="TEST",
+                            field_mapping=None,
+                            subtype="",
+                            expression="",
+                            match_fields=None,
+                            update_geometry="NOT_UPDATE_GEOMETRY",
+                            enforce_domains="NO_ENFORCE_DOMAINS"
                         )
-                    arcpy.management.Append(
-                        inputs=temp_output,
-                        target=out_detected_objects,
-                        schema_type="TEST",
-                        field_mapping=None,
-                        subtype="",
-                        expression="",
-                        match_fields=None,
-                        update_geometry="NOT_UPDATE_GEOMETRY",
-                        enforce_domains="NO_ENFORCE_DOMAINS"
-                    )
-                    output_features.append(temp_output)
-                    #Repair feature geometry
-                    arcpy.management.RepairGeometry(temp_output)
-                    #Update feature extent
-                    arcpy.management.RecalculateFeatureClassExtent(temp_output)
+                        output_features.append(temp_output)
+                        #Repair feature geometry
+                        arcpy.management.RepairGeometry(temp_output)
+                        #Update feature extent
+                        arcpy.management.RecalculateFeatureClassExtent(temp_output)
 
-                   
-                    arcpy.management.MinimumBoundingGeometry(
-                        in_features=temp_output,
-                        out_feature_class=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
-                        geometry_type="ENVELOPE",
-                        group_option="ALL",
-                        group_field=None,
-                        mbg_fields_option="NO_MBG_FIELDS"
-                    )
-                    arcpy.management.Delete(f"temp_output_{i}")
+                    
+                        arcpy.management.MinimumBoundingGeometry(
+                            in_features=temp_output,
+                            out_feature_class=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
+                            geometry_type="ENVELOPE",
+                            group_option="ALL",
+                            group_field=None,
+                            mbg_fields_option="NO_MBG_FIELDS"
+                        )
 
-                    arcpy.management.Append(
-                        inputs=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
-                        target=out_detected_objects_mbg,
-                        schema_type="TEST",
-                        field_mapping=None,
-                        subtype="",
-                        expression="",
-                        match_fields=None,
-                        update_geometry="NOT_UPDATE_GEOMETRY",
-                        enforce_domains="NO_ENFORCE_DOMAINS"
-                    )
-                    output_features.append(temp_output)
-                    arcpy.management.Delete(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"))
+                        arcpy.management.Append(
+                            inputs=os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"),
+                            target=out_detected_objects_mbg,
+                            schema_type="TEST",
+                            field_mapping=None,
+                            subtype="",
+                            expression="",
+                            match_fields=None,
+                            update_geometry="NOT_UPDATE_GEOMETRY",
+                            enforce_domains="NO_ENFORCE_DOMAINS"
+                        )
+                        output_features.append(temp_output)
+                        arcpy.management.Delete(os.path.join(gdb_path, f"{out_detected_objects}_{i}_mbg"))
 
+                
+                    # Clean up intermediate data
+                    arcpy.management.Delete(tessellation_output)
+                    arcpy.management.Delete(clipped_tessellation_output)
+                    arcpy.management.Delete(out_detected_objects_mbg)
             
-            # Clean up intermediate data
-            arcpy.management.Delete(tessellation_output)
-            arcpy.management.Delete(clipped_tessellation_output)
-            arcpy.management.Delete(out_detected_objects_mbg)
+                else:
+                    messages.addMessage(f"Extent {i} already processed. Skipping...")
+                    output_features.append(temp_output)
 
+            arcpy.management.Merge(output_features, out_detected_objects)
+            messages.addMessage("Detected objects merged. Cleaning up intermediate data...")
             
             for feature in output_features:
                 arcpy.management.Delete(feature)
