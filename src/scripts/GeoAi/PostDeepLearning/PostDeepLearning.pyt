@@ -26,7 +26,11 @@ def raster_to_polygon(input_raster, field_name, unique_value, messages):
 
     # Delete polygons with field values not equal to the unique value
     messages.addMessage(f"Deleting polygons with field values not equal to {unique_value}...")
-    with arcpy.da.UpdateCursor(polygon_fc, [field_name], f"{field_name} <> '{unique_value}'") as cursor:
+    messages.addMessage(f"Polygon FC fields: {[field.name for field in arcpy.ListFields(polygon_fc)]}")
+    
+    field_name = "gridcode" if field_name == "Value" else field_name
+    sql_query = f"{field_name} <> {unique_value}" if field_name == "gridcode" else f"{field_name} <> '{unique_value}'"
+    with arcpy.da.UpdateCursor(polygon_fc, [field_name], sql_query) as cursor:
         for row in cursor:
             cursor.deleteRow()
     messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
