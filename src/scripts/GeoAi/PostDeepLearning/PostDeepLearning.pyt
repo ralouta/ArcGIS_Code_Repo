@@ -9,7 +9,7 @@ class Toolbox(object):
         self.alias = "Toolbox for post-processing deep learning results"
 
         # List of tool classes associated with this toolbox
-        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows, PostDeepLearningTreeWorkflows]
+        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows, PostDeepLearningTreeWorkflows, PostDeepLearningAgricultureFieldsWorkflows]
 
 def raster_to_polygon(input_raster, field_name, unique_value, messages):
     messages.addMessage("Starting raster to polygon conversion...")
@@ -34,6 +34,11 @@ def raster_to_polygon(input_raster, field_name, unique_value, messages):
         for row in cursor:
             cursor.deleteRow()
     messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
+    
+    # Repair geometrt of the polygon feature class
+    messages.addMessage("Repairing polygon geometry...")
+    arcpy.RepairGeometry_management(polygon_fc)
+    messages.addMessage("Polygon geometry repaired.")
 
     return polygon_fc
 
@@ -109,16 +114,12 @@ class PostDeepLearningBuildingsWorkflows(object):
         messages.addMessage("Starting the post-processing workflow...")
 
         polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
-
-        # Repair polygon geometry
-        messages.addMessage("Repairing polygon geometry...")
-        arcpy.RepairGeometry_management(polygon_fc)
-        messages.addMessage("Polygon geometry repaired.")
+        field_name = "gridcode" if field_name == "Value" else field_name
 
         # Apply pairwise buffer with -125 cm
         messages.addMessage("Applying pairwise buffer with -125 cm...")
         buffer_fc = "in_memory/buffer_fc"
-        arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "-150 Centimeters")
+        arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "-125 Centimeters")
         messages.addMessage("Pairwise buffer applied.")
 
         # Run pairwise dissolve
@@ -136,7 +137,7 @@ class PostDeepLearningBuildingsWorkflows(object):
         # Apply a 125 cm positive buffer
         messages.addMessage("Applying a 125 cm positive buffer...")
         buffer_positive_fc = "in_memory/buffer_positive_fc"
-        arcpy.analysis.PairwiseBuffer(singlepart_fc, buffer_positive_fc, "150 Centimeters")
+        arcpy.analysis.PairwiseBuffer(singlepart_fc, buffer_positive_fc, "125 Centimeters")
         messages.addMessage("Positive buffer applied.")
 
         # Fill gaps with max gap area of 25 square meters
@@ -160,11 +161,11 @@ class PostDeepLearningBuildingsWorkflows(object):
         with arcpy.da.SearchCursor(filled_gaps_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
             with arcpy.da.InsertCursor(feature_class_1, ["SHAPE@"]) as cursor_1, arcpy.da.InsertCursor(feature_class_2, ["SHAPE@"]) as cursor_2, arcpy.da.InsertCursor(feature_class_3, ["SHAPE@"]) as cursor_3, arcpy.da.InsertCursor(feature_class_4, ["SHAPE@"]) as cursor_4:
                 for row in cursor:
-                    if 4 <= row[1] <= 100:
+                    if 4 <= row[1] <= 1000:
                         cursor_1.insertRow([row[0]])
-                    elif 100 < row[1] <= 1000:
+                    elif 1000 < row[1] <= 3500:
                         cursor_2.insertRow([row[0]])
-                    elif 1000 < row[1] <= 5000:
+                    elif 3500 < row[1] <= 5000:
                         cursor_3.insertRow([row[0]])
                     else:
                         cursor_4.insertRow([row[0]])
@@ -178,12 +179,12 @@ class PostDeepLearningBuildingsWorkflows(object):
 
         messages.addMessage("Regularizing building footprints for feature class 2 (area range: 100 - 1000 square meters)...")
         regularized_fc_2 = "in_memory/regularized_fc_2"
-        arcpy.ddd.RegularizeBuildingFootprint(feature_class_2, regularized_fc_2, "RIGHT_ANGLES_AND_DIAGONALS", 2.5)
+        arcpy.ddd.RegularizeBuildingFootprint(feature_class_2, regularized_fc_2, "RIGHT_ANGLES_AND_DIAGONALS", 1.5)
         messages.addMessage("Building footprints for feature class 2 regularized.")
 
         messages.addMessage("Regularizing building footprints for feature class 3 (area range: 1000 - 5000 square meters)...")
         regularized_fc_3 = "in_memory/regularized_fc_3"
-        arcpy.ddd.RegularizeBuildingFootprint(feature_class_3, regularized_fc_3, "RIGHT_ANGLES_AND_DIAGONALS", 5)
+        arcpy.ddd.RegularizeBuildingFootprint(feature_class_3, regularized_fc_3, "RIGHT_ANGLES_AND_DIAGONALS", 3.5)
         messages.addMessage("Building footprints for feature class 3 regularized.")
 
         messages.addMessage("Regularizing building footprints for feature class 4 (area range: > 5000 square meters)...")
@@ -278,6 +279,7 @@ class PostDeepLearningRoadsWorkflows(object):
         messages.addMessage("Starting the post-processing workflow...")
 
         polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
+        field_name = "gridcode" if field_name == "Value" else field_name
 
         # Smooth the polygons
         messages.addMessage("Smoothing the polygons with 25 meters tolerance...")
@@ -360,8 +362,7 @@ class PostDeepLearningTreeWorkflows(object):
             datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
                       "DERasterDataset", "GPRasterLayer", "GPRasterDataLayer"],
             parameterType="Required",
-            direction="Input",
-            multiValue=True
+            direction="Input"
         )
         params.append(input_rasters)
 
@@ -381,7 +382,7 @@ class PostDeepLearningTreeWorkflows(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input",
-            multiValue=False
+            multiValue=True
         )
         unique_value.parameterDependencies = [field_name.name]
         params.append(unique_value)
@@ -403,10 +404,9 @@ class PostDeepLearningTreeWorkflows(object):
             input_rasters = parameters[0].values
             if field_name and input_rasters:
                 unique_values = set()
-                for input_raster in input_rasters:
-                    with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
-                        for row in cursor:
-                            unique_values.add(row[0])
+                with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
+                    for row in cursor:
+                        unique_values.add(row[0])
                 parameters[2].filter.list = sorted(unique_values)
         return
 
@@ -415,8 +415,9 @@ class PostDeepLearningTreeWorkflows(object):
         field_name = parameters[1].valueAsText
         unique_value = parameters[2].valueAsText
         output_feature_class = parameters[3].valueAsText
-
+        
         messages.addMessage("Starting the post-processing workflow...")
+        field_name = "gridcode" if field_name == "Value" else field_name
 
         final_output_fc = "in_memory/final_output_fc"
         first_iteration = True
@@ -591,5 +592,147 @@ class PostDeepLearningTreeWorkflows(object):
         messages.addMessage("Final output copied to the specified output feature class.")
 
         messages.addMessage("Post-processing workflow completed successfully.")
+
+        return
+
+class PostDeepLearningAgricultureFieldsWorkflows(object):
+    def __init__(self):
+        self.label = "Post Processing Agriculture Fields from Raster Output"
+        self.description = "Toolbox for post-processing agriculture fields extracted from deep learning results"
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        params = []
+
+        input_raster = arcpy.Parameter(
+            displayName="Input Raster",
+            name="in_raster",
+            datatype=["DEMapServer", "GPRasterDataLayer", "DEImageServer", "DEMosaicDataset",
+                      "DERasterDataset", "GPRasterLayer", "GPRasterDataLayer"],
+            parameterType="Required",
+            direction="Input"
+        )
+        params.append(input_raster)
+
+        field_name = arcpy.Parameter(
+            displayName="Field Name for Raster to Polygon",
+            name="field_name",
+            datatype="Field",
+            parameterType="Required",
+            direction="Input"
+        )
+        field_name.parameterDependencies = [input_raster.name]
+        params.append(field_name)
+
+        unique_value = arcpy.Parameter(
+            displayName="Unique Value of Selected Field",
+            name="unique_value",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True
+        )
+        unique_value.parameterDependencies = [field_name.name]
+        params.append(unique_value)
+
+        output_feature_class = arcpy.Parameter(
+            displayName="Output Feature Class",
+            name="output_feature_class",
+            datatype="DEFeatureClass",
+            parameterType="Required",
+            direction="Output"
+        )
+        params.append(output_feature_class)
+
+        return params
+    
+    def updateParameters(self, parameters):
+        if parameters[1].altered:
+            field_name = parameters[1].valueAsText
+            input_raster = parameters[0].valueAsText
+            if field_name and input_raster:
+                unique_values = set()
+                with arcpy.da.SearchCursor(input_raster, [field_name]) as cursor:
+                    for row in cursor:
+                        unique_values.add(row[0])
+                parameters[2].filter.list = sorted(unique_values)
+        return
+
+    def execute(self, parameters, messages):
+        input_raster = parameters[0].valueAsText
+        field_name = parameters[1].valueAsText
+        unique_value = parameters[2].valueAsText
+        output_feature_class = parameters[3].valueAsText
+
+        messages.addMessage("Starting the post-processing workflow for agriculture fields...")
+    
+        # Step 1: Raster to Polygon
+        polygon_fc = raster_to_polygon(input_raster, field_name, unique_value, messages)
+        field_name = "gridcode" if field_name == "Value" else field_name
+
+        # Step 2: Apply Pairwise Buffer with -30 meters
+        messages.addMessage("Applying pairwise buffer with -30 meters...")
+        buffer_negative_fc = "in_memory/buffer_negative_fc"
+        arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_negative_fc, "-30 Meters")
+        messages.addMessage("Negative buffer applied.")
+
+        # Step 3: Delete areas less than 500 square meters
+        messages.addMessage("Deleting polygons with area less than 500 square meters...")
+        with arcpy.da.UpdateCursor(buffer_negative_fc, ["SHAPE@", "SHAPE@AREA", field_name]) as cursor:
+            for row in cursor:
+                if row[1] < 200:
+                    cursor.deleteRow()
+        messages.addMessage("Polygons with area less than 200 square meters deleted.")
+
+        # Step 4: Eliminate Polygon Parts
+        messages.addMessage(f"Eliminating polygon parts with less than 20% area...")
+        eliminated_fc = "in_memory/eliminated_fc"
+        arcpy.management.EliminatePolygonPart(
+            in_features=buffer_negative_fc,
+            out_feature_class=eliminated_fc,
+            condition="PERCENT",
+            part_area="0 SquareMeters",
+            part_area_percent=20,
+            part_option="CONTAINED_ONLY"
+        )
+   
+        messages.addMessage("Polygon parts eliminated.")
+
+        # Step 5: Apply Pairwise Buffer with +30 meters
+        messages.addMessage("Applying pairwise buffer with +30 meters...")
+        buffer_positive_fc = "in_memory/buffer_positive_fc"
+        arcpy.analysis.PairwiseBuffer(eliminated_fc, buffer_positive_fc, "30 Meters")
+        messages.addMessage("Positive buffer applied.")
+
+        # Step 6: Smooth Polygons
+        messages.addMessage("Smoothing polygons with PAEK algorithm and 75 meters tolerance...")
+        arcpy.cartography.SmoothPolygon(
+            in_features=buffer_positive_fc,
+            out_feature_class=output_feature_class,
+            algorithm="PAEK",
+            tolerance="75 Meters",
+            endpoint_option="FIXED_ENDPOINT",
+            error_option="NO_CHECK",
+            in_barriers=None
+        )
+        messages.addMessage("Polygons smoothed.")
+
+        # Step 7: Delete specified fields from the output feature class
+        messages.addMessage("Deleting specified fields from the output feature class...")
+        fields_to_delete = ["ID", "BUFF_DIST", "ORIG_FID", "InPoly_FID"]
+        existing_fields = [field.name for field in arcpy.ListFields(output_feature_class)]
+        fields_to_delete = [field for field in fields_to_delete if field in existing_fields]
+        if fields_to_delete:
+            arcpy.management.DeleteField(output_feature_class, fields_to_delete)
+            messages.addMessage(f"Fields {fields_to_delete} deleted from the output feature class.")
+        else:
+            messages.addMessage("No specified fields found to delete.")
+
+        # Cleanup
+        messages.addMessage("Deleting intermediate layers...")
+        arcpy.management.Delete([polygon_fc, buffer_negative_fc, eliminated_fc, buffer_positive_fc])
+        messages.addMessage("Intermediate layers deleted.")
+
+        messages.addMessage("Post-processing workflow for agriculture fields completed successfully.")
 
         return
