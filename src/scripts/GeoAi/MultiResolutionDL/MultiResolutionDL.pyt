@@ -388,7 +388,7 @@ class MultiScaleDL(object):
             if not arcpy.Exists(merge_output):
                 # Repair geometry
                 arcpy.AddMessage("Repairing geometry...")
-                arcpy.RepairGeometry_management(out_fc)
+                arcpy.management.RepairGeometry(out_fc)
                 arcpy.AddMessage("Geometry repaired.")
 
                 # Delete rows with area > 4500
@@ -411,14 +411,17 @@ class MultiScaleDL(object):
 
                 # Pairwise Dissolve
                 arcpy.AddMessage("Running Pairwise Dissolve...")
-                pairwise_dissoolve_output_1 = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_dissolved")
-                arcpy.analysis.PairwiseDissolve(in_features=pairwise_buffer_output, out_feature_class=pairwise_dissoolve_output_1, multi_part="SINGLE_PART")
+                pairwise_dissolve_output_1 = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_dissolved")
+                arcpy.analysis.PairwiseDissolve(in_features=pairwise_buffer_output, out_feature_class=pairwise_dissolve_output_1, multi_part="SINGLE_PART")
                 arcpy.AddMessage("Pairwise Dissolve completed.")
+                # Check and Repair Geometry
+                arcpy.management.CheckGeometry(pairwise_dissolve_output_1, "geometry_issues.txt")
+                arcpy.management.RepairGeometry(pairwise_dissolve_output_1)
 
                 # Spatial Join
                 arcpy.AddMessage("Running Spatial Join...")
                 spatial_join_output = os.path.join(out_gdb, f"{out_fc_name}_{int(float(cell_size)*100)}_spatial_join")
-                arcpy.analysis.SpatialJoin(target_features=pairwise_dissoolve_output_1, join_features=pairwise_buffer_output, out_feature_class=spatial_join_output, join_operation="JOIN_ONE_TO_MANY", join_type="KEEP_ALL")
+                arcpy.analysis.SpatialJoin(target_features=pairwise_dissolve_output_1, join_features=pairwise_buffer_output, out_feature_class=spatial_join_output, join_operation="JOIN_ONE_TO_MANY", join_type="KEEP_ALL")
                 arcpy.AddMessage("Spatial Join completed.")
 
                 # Pairwise Dissolve - Mean Confidence
@@ -531,7 +534,7 @@ class MultiScaleDL(object):
                 arcpy.Delete_management(spatial_join_output)
                 arcpy.Delete_management(pairwise_buffer_output)
                 arcpy.Delete_management(spatial_join_output)
-                arcpy.Delete_management(pairwise_dissoolve_output_1)
+                arcpy.Delete_management(pairwise_dissolve_output_1)
                 arcpy.Delete_management(pairwise_dissolve_output_2)
                 for output_path in output_paths:
                     arcpy.Delete_management(output_path)

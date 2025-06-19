@@ -564,8 +564,10 @@ class DetectObjectsUsingDeepLearning(object):
             # Run Detect Objects Using Deep Learning for each extent
             output_features = []
             total_extents = len(extents)
+            print(f"Total extents to process: {total_extents}")
             for key, extent in extents.items():
                 i = list(extents.keys()).index(key) + 1
+                print(f"Processing extent {i} of {total_extents}...")
                 messages.addMessage(f"Processing extent {i} of {total_extents}...")
                 arcpy.env.extent = extent
                 #messages.addMessage(f"Extent: {extent.XMin}, {extent.YMin}, {extent.XMax}, {extent.YMax}, {extent.spatialReference.name}")
@@ -575,7 +577,7 @@ class DetectObjectsUsingDeepLearning(object):
                 out_detected_objects_mbg = f"{gdb_path}\\{os.path.basename(out_detected_objects)}_mbg"
                 if not arcpy.Exists(temp_output):
                     if i == 1:
-                    # if i == 1:
+                        print("Running Detect Objects Using Deep Learning for the first extent...")
                         with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                             arcpy.ia.DetectObjectsUsingDeepLearning(
                                 in_raster=in_raster,
@@ -609,7 +611,7 @@ class DetectObjectsUsingDeepLearning(object):
 
                     elif i > 1:
                         
-                            
+                        print(f"Running Detect Objects Using Deep Learning for extent {i}...")
                         # Check if the extent is completely within the minimum bounding geometry
                         mbg_polygons = []
                         with arcpy.da.SearchCursor(out_detected_objects_mbg, ["SHAPE@"]) as mbg_cursor:
@@ -685,9 +687,10 @@ class DetectObjectsUsingDeepLearning(object):
 
                 
                     # Clean up intermediate data
-                    arcpy.management.Delete(tessellation_output)
-                    arcpy.management.Delete(clipped_tessellation_output)
-                    arcpy.management.Delete(out_detected_objects_mbg)
+                    # arcpy.management.Delete(tessellation_output)
+                    # arcpy.management.Delete(clipped_tessellation_output)
+                    # arcpy.management.Delete(out_detected_objects_mbg)
+                    # break
             
                 else:
                     messages.addMessage(f"Extent {i} already processed. Skipping...")
