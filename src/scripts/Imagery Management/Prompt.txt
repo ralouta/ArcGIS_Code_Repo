@@ -1,0 +1,59 @@
+Create a geoprocessing python toolbox .pyt to use in ArcGIS Pro in the GeoprocessingToolbox folder.
+
+The toolbox should have 1 tool and 2 parameters only. An input folder directory and and output featureclass
+
+The input folder directory WaPOR_inputs got n number of rasters ending with .tif. and 1 .lyrx file referenced in the chat.
+you need to find all the .tif files and the .lyrx file.
+
+All .tif should be converted to polygon using ArcGIS raster to polygon geoprocessing tool. Note always have poly_<tifname> for the output polygon avoid using number to start the name with this causes errors.
+
+The tif names are formated as eg": 2018_03_D2 where 2018 is the year 03 is the month and D2 is dekad 2 which is 10th of the month.
+The tifs can have different dekad values D1 D2 D3 and the year and month can vary. Make sure you extract that as a date and calculate to the converted polygons as a date field
+
+Each polygon will have a gridcode value this corresponds to the example below where values are the gridcode in the .lyrx file and label is the landcover use. Store this in a dictionary as you will use it later to add a field domain and assign
+
+eg of .lyrx where values 1 is Tree and 4 is Grassland..
+
+"groups" : [
+{
+"type" : "CIMRasterUniqueValueGroup",
+"classes" : [
+{
+"type" : "CIMRasterUniqueValueClass",
+"values" : [
+"1"
+],
+"label" : "Tree",
+"color" : {
+"type" : "CIMRGBColor",
+"values" : [
+38,
+115,
+0,
+100
+]
+}
+},
+{
+"type" : "CIMRasterUniqueValueClass",
+"values" : [
+"4"
+],
+"label" : "Grassland",
+"color" : {
+"type" : "CIMRGBColor",
+"values" : [
+255,
+255,
+190,
+100
+]
+}
+
+remove any polygon with area less than 60x60 or 3600 meters which stands for the pixel resolution hint use built in SHAPE@AREA and Update cursor
+use arcpy simplify polygon tool to simplify the polygons with the basic parameter configuration
+Merge all polygons together.
+Repair geometry
+Add the class domain described earlier add class field assign the domain and claulate the field.
+Add Arcpy Messages to get more information on the progress
+Save all intermediate outputs in memory
