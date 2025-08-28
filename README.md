@@ -28,12 +28,8 @@ Please ensure you have the prerequisites installed before proceeding.
         - `General purpose code/`: General purpose scripts for various tasks.
         - `GeoAi/`: Scripts for geospatial AI tasks.
         - `Imagery notebooks/`: Notebooks for managing and analyzing imagery data.
-    - `tests/`: Contains Jupyter notebooks for testing the scripts and toolboxes.
-        - `Demo-Geospatialcenter.ipynb`: Demonstrates geospatial data processing.
-        - `dynamic_arguments.ipynb`: Tests dynamic argument handling in scripts.
-        - `maxgumby_data.ipynb`: Tests data processing for the MaxGumby dataset.
-        - `trips_pages_200.csv`: Sample data for testing.
-
+        - `Imagery Management/`: Imagery management tool(s).
+    
 - `README.md`: This file.
 - `requirements.txt`: Lists the Python packages required to run the scripts and notebooks.
 
