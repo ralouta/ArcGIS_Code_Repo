@@ -1,0 +1,12 @@
+Create a Python geoprocessing toolbox (.pyt) in tests directory for ArcGIS Pro with the following requirements:
+
+- The toolbox must contain a tool named "Export ArcGIS Online Items to CSV".
+- .pyt file must define both the tool class and the required Toolbox class so the tool appears in ArcGIS Pro.
+- The tool should:
+- Connect to ArcGIS Online using the active ArcGIS Pro session (GIS('pro')).
+- Provide a required output file parameter for the user to specify the CSV location.
+- Search for all "Web AppBuilder" item types in the organization use a max items of 10000.
+- For each item, collect: itemid, title, owner, owner email, type, url, last update (convert epoch milliseconds to a readable date string), and number of views.
+- Export the results to the specified CSV file.
+- Include robust error handling and clear parameter descriptions.
+- add useful messages in the tool for the user to know progress as they run the tool.
