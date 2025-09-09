@@ -1,2 +1,5 @@
 src/tests/
 repo-traffic/
+.vscode/
+.gitignore
+.requirements.txt
