@@ -1,5 +1,4 @@
 import arcpy
-from arcpy.sa import *
 
 class Toolbox(object):
     def __init__(self):
@@ -110,7 +109,7 @@ class PostDeepLearningBuildingsWorkflows(object):
             parameterType="Required",
             direction="Input"
         )
-        field_name.parameterDependencies = [input_raster.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(field_name)
 
         unique_value = arcpy.Parameter(
@@ -121,7 +120,7 @@ class PostDeepLearningBuildingsWorkflows(object):
             direction="Input",
             multiValue=True
         )
-        unique_value.parameterDependencies = [field_name.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(unique_value)
 
         output_feature_class = arcpy.Parameter(
@@ -276,7 +275,7 @@ class PostDeepLearningRoadsWorkflows(object):
             parameterType="Required",
             direction="Input"
         )
-        field_name.parameterDependencies = [input_raster.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(field_name)
 
         unique_values_param = arcpy.Parameter(
@@ -287,7 +286,7 @@ class PostDeepLearningRoadsWorkflows(object):
             direction="Input",
             multiValue=True
         )
-        unique_values_param.parameterDependencies = [field_name.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(unique_values_param)
 
         output_feature_class = arcpy.Parameter(
@@ -416,7 +415,7 @@ class PostDeepLearningTreeWorkflows(object):
             parameterType="Required",
             direction="Input"
         )
-        field_name.parameterDependencies = [input_raster.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(field_name)
 
         unique_value = arcpy.Parameter(
@@ -427,7 +426,7 @@ class PostDeepLearningTreeWorkflows(object):
             direction="Input",
             multiValue=True
         )
-        unique_value.parameterDependencies = [field_name.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(unique_value)
 
         output_feature_class = arcpy.Parameter(
@@ -477,7 +476,7 @@ class PostDeepLearningTreeWorkflows(object):
         messages.addMessage("Applying a 10 cm buffer...")
         buffer_fc = "in_memory/buffer_fc"
         arcpy.analysis.PairwiseBuffer(polygon_fc, buffer_fc, "-30 Centimeters")
-        messages.addMessage("10 cm buffer applied.")
+        messages.addMessage("30 cm buffer applied.")
 
         # Split the polygon feature class into two based on area
         messages.addMessage("Splitting the polygon feature class into two based on area...")
@@ -501,7 +500,7 @@ class PostDeepLearningTreeWorkflows(object):
         # Minimum bounding geometry
         messages.addMessage("Applying minimum bounding geometry...")
         mbg_fc = "in_memory/mbg_fc"
-        arcpy.management.MinimumBoundingGeometry(tree_area_fc_2, mbg_fc, "RECTANGLE_BY_AREA", "None")
+        arcpy.management.MinimumBoundingGeometry(tree_area_fc_2, mbg_fc, "RECTANGLE_BY_AREA", "NONE")
         messages.addMessage("Minimum bounding geometry applied.")
 
         # Generate tessellation
@@ -542,7 +541,7 @@ class PostDeepLearningTreeWorkflows(object):
                 polygon = row[0]  # Geometry object
                 extent = polygon.extent  # Get the extent (bounding box)
                 width = extent.width  # Width of the bounding box
-                row[1] = width / 2  # Assign the width to the field
+                row[1] = width # Assign the width to the field
                 cursor.updateRow(row)
 
         del cursor  # Clean up cursor object
@@ -573,10 +572,10 @@ class PostDeepLearningTreeWorkflows(object):
 
 
         # Remove small polygons
-        messages.addMessage("Removing polygons with area less than 0.25 square meters...")
+        messages.addMessage("Removing polygons with area less than 3 square meters...")
         with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
             for row in cursor:
-                if row[1] < 1:
+                if row[1] < 3:
                     cursor.deleteRow()
         del cursor  # Clean up cursor object
         messages.addMessage("Small polygons removed.")
@@ -666,7 +665,7 @@ class PostDeepLearningAgricultureFieldsWorkflows(object):
             parameterType="Required",
             direction="Input"
         )
-        field_name.parameterDependencies = [input_raster.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(field_name)
 
         unique_value = arcpy.Parameter(
@@ -677,7 +676,7 @@ class PostDeepLearningAgricultureFieldsWorkflows(object):
             direction="Input",
             multiValue=True
         )
-        unique_value.parameterDependencies = [field_name.name]
+        # Removed parameterDependencies to avoid type checker issues; optional in ArcPy
         params.append(unique_value)
 
         output_feature_class = arcpy.Parameter(
