@@ -573,10 +573,10 @@ class PostDeepLearningTreeWorkflows(object):
 
 
         # Remove small polygons
-        messages.addMessage("Removing polygons with area less than 0.25 square meters...")
+        messages.addMessage("Removing polygons with area less than 7.5 square meters...")
         with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
             for row in cursor:
-                if row[1] < 1:
+                if row[1] < 7.5:
                     cursor.deleteRow()
         del cursor  # Clean up cursor object
         messages.addMessage("Small polygons removed.")
