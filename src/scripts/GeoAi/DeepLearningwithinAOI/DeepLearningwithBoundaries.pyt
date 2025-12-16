@@ -103,6 +103,14 @@ class ClassifyPixelsUsingDeepLearning(object):
             parameterType="Optional",
             direction="Input"))
 
+        # Optional polygon output of classified extents merged
+        params.append(arcpy.Parameter(
+            displayName="Output Classified Polygons (merged)",
+            name="out_classified_polygons",
+            datatype="DEFeatureClass",
+            parameterType="Optional",
+            direction="Output"))
+
         params[-1].columns = [["GPString", "Name"], ["GPString", "Value"]]
         return params
 
@@ -184,6 +192,7 @@ class ClassifyPixelsUsingDeepLearning(object):
         out_classified_raster = parameters[2].valueAsText
         processing_geometry = parameters[3].valueAsText
         arguments = parameters[4].values
+        out_classified_polygons = parameters[5].valueAsText if len(parameters) > 5 else None
 
         # Convert arguments to a dictionary, excluding deleted arguments
         arguments_dict = {arg[0]: arg[1] for arg in arguments if arg[1]}
@@ -248,14 +257,17 @@ class ClassifyPixelsUsingDeepLearning(object):
 
             # Run Classify Pixels Using Deep Learning for each extent
             output_rasters = []
+            polygon_fcs = [] if out_classified_polygons else None
             total_extents = len(extents)
             for i, extent in enumerate(extents, start=1):
                 messages.addMessage(f"Processing extent {i} of {total_extents}...")
                 arcpy.env.extent = extent
-                temp_output = f"{gdb_path}\\classified_extent_{i}"
-                
-                
+                temp_output = os.path.join(gdb_path, f"classified_extent_{i}")
                 formatted_arguments = ";".join([f"{key} {value}" for key, value in arguments_dict.items()])
+
+                # Overwrite-safety: delete existing temp raster if rerunning
+                if arcpy.Exists(temp_output):
+                    arcpy.management.Delete(temp_output)
 
                 with arcpy.EnvManager(extent=extent, cellSize=arcpy.env.cellSize):
                     classified_raster = arcpy.ia.ClassifyPixelsUsingDeepLearning(
@@ -268,16 +280,81 @@ class ClassifyPixelsUsingDeepLearning(object):
                         overwrite_attachments="NO_OVERWRITE",
                         use_pixelspace="NO_PIXELSPACE"
                     )
-                    temp_output = arcpy.management.CreateUniqueName(temp_output, gdb_path)
-
                     classified_raster.save(temp_output)
                 output_rasters.append(temp_output)
+                # Convert raster to polygon immediately if requested
+                if polygon_fcs is not None:
+                    poly_temp = os.path.join(gdb_path, f"classified_extent_{i}_poly")
+                    if arcpy.Exists(poly_temp):
+                        arcpy.management.Delete(poly_temp)
+                    arcpy.RasterToPolygon_conversion(temp_output, poly_temp, "NO_SIMPLIFY", "Value")
+                    # Ensure Class field exists and copy gridcode/value
+                    if not arcpy.ListFields(poly_temp, "Class"):
+                        arcpy.management.AddField(poly_temp, "Class", "TEXT", field_length=64)
+                    # gridcode field holds the value when Value was used; fallback to VALUE
+                    value_field = "gridcode" if arcpy.ListFields(poly_temp, "gridcode") else "Value"
+                    with arcpy.da.UpdateCursor(poly_temp, ["Class", value_field]) as cur:
+                        for row in cur:
+                            row[0] = str(row[1])
+                            cur.updateRow(row)
+                    polygon_fcs.append(poly_temp)
 
-            messages.addMessage("Classified pixels for each extent. Merging output rasters...")
+            messages.addMessage("Classified pixels for each extent. Merging outputs...")
 
-            # Merge all output rasters
-            arcpy.management.MosaicToNewRaster(
-                output_rasters, out_classified_raster, pixel_type="32_BIT_FLOAT")
+            if out_classified_polygons:
+                # Merge polygons instead of rasters
+                messages.addMessage("Merging classified extent polygons...")
+                if len(polygon_fcs) == 1:
+                    if arcpy.Exists(out_classified_polygons):
+                        arcpy.management.Delete(out_classified_polygons)
+                    arcpy.management.CopyFeatures(polygon_fcs[0], out_classified_polygons)
+                else:
+                    if arcpy.Exists(out_classified_polygons):
+                        arcpy.management.Delete(out_classified_polygons)
+                    arcpy.management.Merge(polygon_fcs, out_classified_polygons)
+                messages.addMessage("Polygon merge completed.")
+                # Optionally still mosaic rasters for completeness
+                if out_classified_raster:
+                    messages.addMessage("Creating mosaicked classified raster (optional)...")
+                    if len(output_rasters) == 1:
+                        if arcpy.Exists(out_classified_raster):
+                            arcpy.management.Delete(out_classified_raster)
+                        arcpy.management.CopyRaster(output_rasters[0], out_classified_raster)
+                    else:
+                        out_workspace = os.path.dirname(out_classified_raster)
+                        out_name = os.path.basename(out_classified_raster)
+                        if arcpy.Exists(out_classified_raster):
+                            arcpy.management.Delete(out_classified_raster)
+                        arcpy.management.MosaicToNewRaster(
+                            input_rasters=output_rasters,
+                            output_location=out_workspace,
+                            raster_dataset_name_with_extension=out_name,
+                            number_of_bands=1,
+                            pixel_type="32_BIT_FLOAT",
+                            mosaic_method="LAST",
+                            mosaic_colormap_mode="MATCH"
+                        )
+            else:
+                # Original raster mosaic path
+                messages.addMessage("Merging classified rasters (no polygon output requested)...")
+                if len(output_rasters) == 1:
+                    if arcpy.Exists(out_classified_raster):
+                        arcpy.management.Delete(out_classified_raster)
+                    arcpy.management.CopyRaster(output_rasters[0], out_classified_raster)
+                else:
+                    out_workspace = os.path.dirname(out_classified_raster)
+                    out_name = os.path.basename(out_classified_raster)
+                    if arcpy.Exists(out_classified_raster):
+                        arcpy.management.Delete(out_classified_raster)
+                    arcpy.management.MosaicToNewRaster(
+                        input_rasters=output_rasters,
+                        output_location=out_workspace,
+                        raster_dataset_name_with_extension=out_name,
+                        number_of_bands=1,
+                        pixel_type="32_BIT_FLOAT",
+                        mosaic_method="LAST",
+                        mosaic_colormap_mode="MATCH"
+                    )
 
             messages.addMessage("Output rasters merged. Cleaning up intermediate data...")
 
@@ -286,6 +363,10 @@ class ClassifyPixelsUsingDeepLearning(object):
             arcpy.management.Delete(clipped_tessellation_output)
             for raster in output_rasters:
                 arcpy.management.Delete(raster)
+            if polygon_fcs:
+                for poly in polygon_fcs:
+                    if arcpy.Exists(poly):
+                        arcpy.management.Delete(poly)
 
             messages.addMessage("Intermediate data cleaned up.")
         else:
@@ -310,6 +391,24 @@ class ClassifyPixelsUsingDeepLearning(object):
                 )
                 classified_raster.save(out_classified_raster)
             messages.addMessage("Classification completed.")
+            # Optional polygon conversion for direct path
+            if out_classified_polygons:
+                poly_temp = os.path.join(gdb_path, "classified_direct_poly")
+                if arcpy.Exists(poly_temp):
+                    arcpy.management.Delete(poly_temp)
+                arcpy.RasterToPolygon_conversion(out_classified_raster, poly_temp, "NO_SIMPLIFY", "Value")
+                if not arcpy.ListFields(poly_temp, "Class"):
+                    arcpy.management.AddField(poly_temp, "Class", "TEXT", field_length=64)
+                value_field = "gridcode" if arcpy.ListFields(poly_temp, "gridcode") else "Value"
+                with arcpy.da.UpdateCursor(poly_temp, ["Class", value_field]) as cur:
+                    for row in cur:
+                        row[0] = str(row[1])
+                        cur.updateRow(row)
+                if arcpy.Exists(out_classified_polygons):
+                    arcpy.management.Delete(out_classified_polygons)
+                arcpy.management.CopyFeatures(poly_temp, out_classified_polygons)
+                arcpy.management.Delete(poly_temp)
+                messages.addMessage("Created merged classified polygons for direct path.")
 
         return
 
@@ -521,7 +620,7 @@ class DetectObjectsUsingDeepLearning(object):
 
          # Calculate the tessellation area based on batch size and tile area
         batch_size = int(arguments_dict.get("batch_size", 4))
-        tessellation_area = ((batch_size ** 4) * tile_area)
+        tessellation_area = ((batch_size ** 8) * tile_area)
 
         messages.addMessage(
             f"Calculated tessellation area: {tessellation_area:.2f} square kilometers.\n"
@@ -687,9 +786,9 @@ class DetectObjectsUsingDeepLearning(object):
 
                 
                     # Clean up intermediate data
-                    # arcpy.management.Delete(tessellation_output)
-                    # arcpy.management.Delete(clipped_tessellation_output)
-                    # arcpy.management.Delete(out_detected_objects_mbg)
+                    arcpy.management.Delete(tessellation_output)
+                    arcpy.management.Delete(clipped_tessellation_output)
+                    arcpy.management.Delete(out_detected_objects_mbg)
                     # break
             
                 else:

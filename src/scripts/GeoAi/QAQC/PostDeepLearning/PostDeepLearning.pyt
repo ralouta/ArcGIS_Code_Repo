@@ -24,16 +24,58 @@ def raster_to_polygon(input_raster, field_name, unique_value, messages):
     arcpy.RasterToPolygon_conversion(input_raster, polygon_fc, "NO_SIMPLIFY", field_name)
     messages.addMessage("Raster to polygon conversion completed.")
 
-    # Delete polygons with field values not equal to the unique value
-    messages.addMessage(f"Deleting polygons with field values not equal to {unique_value}...")
+    # Delete polygons whose field values are NOT in the provided unique_value list (supports multi-value)
+    messages.addMessage(f"Filtering polygons to keep only selected values (raw): {unique_value}")
     messages.addMessage(f"Polygon FC fields: {[field.name for field in arcpy.ListFields(polygon_fc)]}")
-    
+
+    # Normalize field name (Value -> gridcode from RasterToPolygon output)
     field_name = "gridcode" if field_name == "Value" else field_name
-    sql_query = f"{field_name} <> {unique_value}" if field_name == "gridcode" else f"{field_name} <> '{unique_value}'"
-    with arcpy.da.UpdateCursor(polygon_fc, [field_name], sql_query) as cursor:
-        for row in cursor:
-            cursor.deleteRow()
-    messages.addMessage(f"Polygons with field values not equal to {unique_value} deleted.")
+
+    # Parse multi-value string (semicolon-delimited) into list; strip surrounding quotes
+    raw_values = [v for v in str(unique_value).split(";") if v]
+    allowed_values = []
+    for v in raw_values:
+        v_clean = v.strip().strip("\"").strip("'")  # remove whitespace and leading/trailing quotes
+        if v_clean:
+            allowed_values.append(v_clean)
+
+    messages.addMessage(f"Normalized allowed values: {allowed_values}")
+
+    if not allowed_values:
+        messages.addMessage("No allowed values provided; skipping deletion step.")
+    else:
+        delete_count = 0
+        keep_count = 0
+        allowed_set = set(allowed_values)
+        # For numeric gridcode values attempt numeric casting for comparison
+        numeric_mode = field_name.lower() == "gridcode"
+        with arcpy.da.UpdateCursor(polygon_fc, [field_name]) as cursor:
+            for row in cursor:
+                val = row[0]
+                comp_val = None
+                if numeric_mode:
+                    # Attempt to coerce allowed values to same type as val
+                    try:
+                        comp_allowed = {int(av) for av in allowed_values if av.replace('.', '', 1).isdigit()}
+                        if val not in comp_allowed:
+                            cursor.deleteRow()
+                            delete_count += 1
+                        else:
+                            keep_count += 1
+                    except Exception:
+                        # Fallback to string comparison
+                        if str(val) not in allowed_set:
+                            cursor.deleteRow()
+                            delete_count += 1
+                        else:
+                            keep_count += 1
+                else:
+                    if str(val) not in allowed_set:
+                        cursor.deleteRow()
+                        delete_count += 1
+                    else:
+                        keep_count += 1
+        messages.addMessage(f"Kept {keep_count} polygons; deleted {delete_count} polygons not in allowed set.")
     
     # Repair geometrt of the polygon feature class
     messages.addMessage("Repairing polygon geometry...")
@@ -738,6 +780,4 @@ class PostDeepLearningAgricultureFieldsWorkflows(object):
 
         messages.addMessage("Post-processing workflow for agriculture fields completed successfully.")
 
-        return`
-    
-    `
+        return
