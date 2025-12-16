@@ -572,14 +572,14 @@ class PostDeepLearningTreeWorkflows(object):
         messages.addMessage("Fields deleted.")
 
 
-        # Remove small polygons
-        messages.addMessage("Removing polygons with area less than 7.5 square meters...")
+        # Initial cleanup: remove small polygons (safety pass)
+        messages.addMessage("Initial cleanup: removing polygons < 7.5 m²...")
         with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
             for row in cursor:
                 if row[1] < 7.5:
                     cursor.deleteRow()
-        del cursor  # Clean up cursor object
-        messages.addMessage("Small polygons removed.")
+        del cursor
+        messages.addMessage("Initial small polygons removed.")
 
         # Delete any fields that aren't in polygon_fc fields
         messages.addMessage("Deleting fields that aren't in buffer_fc fields...")
@@ -596,6 +596,15 @@ class PostDeepLearningTreeWorkflows(object):
         else:
             messages.addMessage("No fields to delete.")
         messages.addMessage("Fields that aren't in polygon_fc fields deleted.")
+
+        # Final cleanup before writing: ensure no polygons < 7.5 m²
+        messages.addMessage("Final cleanup before output: removing polygons < 7.5 m²...")
+        with arcpy.da.UpdateCursor(buffer_fc_1, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+            for row in cursor:
+                if row[1] < 7.5:
+                    cursor.deleteRow()
+        del cursor
+        messages.addMessage("Final cleanup done.")
 
         if first_iteration:
             arcpy.management.CopyFeatures(buffer_fc_1, final_output_fc)
@@ -625,6 +634,15 @@ class PostDeepLearningTreeWorkflows(object):
                         if row[0] == 0:
                             insert_cursor.insertRow([row[1]])
             messages.addMessage("Attributes with Join_Count None inserted into the final output feature class.")
+
+            # Post-append cleanup: remove any small polygons introduced by join
+            messages.addMessage("Post-append cleanup: removing polygons < 7.5 m² from final output...")
+            with arcpy.da.UpdateCursor(final_output_fc, ["SHAPE@", "SHAPE@AREA"]) as cursor:
+                for row in cursor:
+                    if row[1] < 7.5:
+                        cursor.deleteRow()
+            del cursor
+            messages.addMessage("Post-append cleanup completed.")
 
         # Delete intermediate layers
         messages.addMessage("Deleting intermediate layers...")
