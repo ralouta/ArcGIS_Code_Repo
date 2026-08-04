@@ -1,10 +1,7 @@
-import math
-import statistics
-
 import arcpy
 
 
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "2.0.0"
 NO_MATCH_EVIDENCE = "No Matching Damage Evidence"
 LOW_EVIDENCE = "Low Damage Evidence"
 MODERATE_EVIDENCE = "Moderate Damage Evidence"
@@ -14,11 +11,9 @@ OUTPUT_FIELD_NAMES = {
     "DMG_CLASS",
     "MATCH_CNT",
     "BLDG_AREA",
-    "EVID_SCORE",
-    "SCORE_MED",
-    "SCORE_MAD",
-    "HIGH_THR",
-    "ROBUST_Z",
+    "DMG_AREA",
+    "COVER_PCT",
+    "DMG_BID",
 }
 
 
@@ -34,7 +29,7 @@ class ClassifyBuildingDamage(object):
         self.label = "Classify Building Damage from Similar Embeddings"
         self.description = (
             "Spatially joins similar-embedding features to building polygons and "
-            "screens damage evidence using area-normalized match density and robust statistics."
+            "classifies damage evidence from the percentage of each building covered by embedding polygons."
         )
         self.canRunInBackground = False
 
@@ -55,6 +50,7 @@ class ClassifyBuildingDamage(object):
             parameterType="Required",
             direction="Input",
         )
+        similar_features.filter.list = ["Polygon"]
 
         output_features = arcpy.Parameter(
             displayName="Output Classified Buildings",
@@ -64,23 +60,23 @@ class ClassifyBuildingDamage(object):
             direction="Output",
         )
 
-        low_evidence_max = arcpy.Parameter(
-            displayName="Maximum Match Count for Low Damage Evidence",
-            name="low_evidence_max",
-            datatype="GPLong",
-            parameterType="Optional",
-            direction="Input",
-        )
-        low_evidence_max.value = 1
-
-        robust_multiplier = arcpy.Parameter(
-            displayName="High Evidence Threshold (Scaled MADs Above Median)",
-            name="robust_multiplier",
+        moderate_coverage_threshold = arcpy.Parameter(
+            displayName="Moderate Damage Minimum Coverage (%)",
+            name="moderate_coverage_threshold",
             datatype="GPDouble",
             parameterType="Optional",
             direction="Input",
         )
-        robust_multiplier.value = 2.0
+        moderate_coverage_threshold.value = 20.0
+
+        high_coverage_threshold = arcpy.Parameter(
+            displayName="High Damage Minimum Coverage (%)",
+            name="high_coverage_threshold",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input",
+        )
+        high_coverage_threshold.value = 50.0
 
         match_option = arcpy.Parameter(
             displayName="Spatial Match Option",
@@ -90,13 +86,8 @@ class ClassifyBuildingDamage(object):
             direction="Input",
         )
         match_option.filter.type = "ValueList"
-        match_option.filter.list = [
-            "HAVE_THEIR_CENTER_IN",
-            "INTERSECT",
-            "CONTAINS",
-            "WITHIN_A_DISTANCE",
-        ]
-        match_option.value = "HAVE_THEIR_CENTER_IN"
+        match_option.filter.list = ["INTERSECT"]
+        match_option.value = "INTERSECT"
 
         search_radius = arcpy.Parameter(
             displayName="Search Radius",
@@ -111,33 +102,36 @@ class ClassifyBuildingDamage(object):
             buildings,
             similar_features,
             output_features,
-            low_evidence_max,
-            robust_multiplier,
+            moderate_coverage_threshold,
+            high_coverage_threshold,
             match_option,
             search_radius,
         ]
 
     def updateParameters(self, parameters):
-        parameters[6].enabled = parameters[5].valueAsText == "WITHIN_A_DISTANCE"
+        parameters[6].enabled = False
         return
 
     def updateMessages(self, parameters):
-        if parameters[3].value is not None and int(parameters[3].value) < 1:
-            parameters[3].setErrorMessage("The low-damage match count must be one or greater.")
+        moderate_threshold = float(parameters[3].value) if parameters[3].value is not None else None
+        high_threshold = float(parameters[4].value) if parameters[4].value is not None else None
+        if moderate_threshold is not None and not 0 < moderate_threshold < 100:
+            parameters[3].setErrorMessage("Moderate coverage must be greater than 0 and less than 100.")
+        if high_threshold is not None and not 0 < high_threshold <= 100:
+            parameters[4].setErrorMessage("High coverage must be greater than 0 and at most 100.")
+        if moderate_threshold is not None and high_threshold is not None and moderate_threshold >= high_threshold:
+            parameters[4].setErrorMessage("High coverage must be greater than moderate coverage.")
 
-        if parameters[4].value is not None and float(parameters[4].value) < 0:
-            parameters[4].setErrorMessage("The scaled-MAD multiplier must be zero or greater.")
-
-        if parameters[5].valueAsText == "WITHIN_A_DISTANCE" and not parameters[6].valueAsText:
-            parameters[6].setErrorMessage("A search radius is required for WITHIN_A_DISTANCE.")
+        if parameters[5].valueAsText != "INTERSECT":
+            parameters[5].setErrorMessage("Coverage classification requires INTERSECT.")
         return
 
     def execute(self, parameters, messages):
         buildings = parameters[0].valueAsText
         similar_features = parameters[1].valueAsText
         output_features = parameters[2].valueAsText
-        low_evidence_max = int(parameters[3].value)
-        robust_multiplier = float(parameters[4].value)
+        moderate_coverage_threshold = float(parameters[3].value)
+        high_coverage_threshold = float(parameters[4].value)
         match_option = parameters[5].valueAsText
         search_radius = parameters[6].valueAsText or None
 
@@ -191,38 +185,10 @@ class ClassifyBuildingDamage(object):
                 )
             )
 
-        observations = []
-        with arcpy.da.SearchCursor(
-            output_features, ["OID@", "Join_Count", "BLDG_AREA"]
-        ) as cursor:
-            for object_id, count, area_sqm in cursor:
-                count = count or 0
-                score = _calculate_evidence_score(count, area_sqm)
-                observations.append((count, area_sqm, score))
-
-        candidate_scores = [
-            score for count, _, score in observations if count > low_evidence_max
-        ]
-        if candidate_scores:
-            score_median, scaled_mad, high_threshold = _robust_threshold(
-                candidate_scores, robust_multiplier
-            )
-        else:
-            score_median = 0.0
-            scaled_mad = 0.0
-            high_threshold = math.inf
-            messages.addWarningMessage(
-                "No buildings exceeded the low-damage cutoff; no Moderate or High Damage Evidence classes can be assigned."
-            )
-
-        if 0 < len(candidate_scores) < 5:
-            messages.addWarningMessage(
-                "Fewer than five buildings exceeded the low-evidence cutoff. Treat the statistical classes as provisional."
-            )
-        if candidate_scores and scaled_mad == 0:
-            messages.addWarningMessage(
-                "Candidate scores have no robust spread; no building can be separated as High Damage Evidence."
-            )
+        messages.addMessage("Calculating embedding coverage within each building...")
+        overlap_areas = _calculate_overlap_areas(
+            output_features, similar_features, messages
+        )
 
         class_totals = {
             NO_MATCH_EVIDENCE: 0,
@@ -233,46 +199,36 @@ class ClassifyBuildingDamage(object):
         fields = [
             "Join_Count",
             "BLDG_AREA",
+            "DMG_BID",
             "DMG_CLASS",
             "MATCH_CNT",
-            "EVID_SCORE",
-            "SCORE_MED",
-            "SCORE_MAD",
-            "HIGH_THR",
-            "ROBUST_Z",
+            "DMG_AREA",
+            "COVER_PCT",
         ]
         with arcpy.da.UpdateCursor(output_features, fields) as cursor:
             for row in cursor:
                 count = row[0] or 0
                 area_sqm = row[1]
-                score = _calculate_evidence_score(count, area_sqm)
-                damage_class = _classify_score(
-                    count, score, low_evidence_max, high_threshold, scaled_mad
-                )
-                robust_z = (
-                    (score - score_median) / scaled_mad
-                    if count > low_evidence_max and scaled_mad > 0
-                    else None
+                damage_area_sqm = overlap_areas.get(row[2], 0.0)
+                coverage_percent = min(100.0, (damage_area_sqm / area_sqm) * 100.0)
+                damage_class = _classify_coverage(
+                    coverage_percent,
+                    moderate_coverage_threshold,
+                    high_coverage_threshold,
                 )
 
-                row[2] = damage_class
-                row[3] = count
-                row[4] = score
-                row[5] = score_median
-                row[6] = scaled_mad
-                row[7] = None if math.isinf(high_threshold) else high_threshold
-                row[8] = robust_z
+                row[3] = damage_class
+                row[4] = count
+                row[5] = damage_area_sqm
+                row[6] = coverage_percent
                 cursor.updateRow(row)
                 class_totals[damage_class] += 1
 
         messages.addMessage(
-            "Screening thresholds: no matching evidence = 0; low damage = 1 to {0} matches; "
-            "high evidence score > {1}. "
-            "Candidate median = {2:.3f}, scaled MAD = {3:.3f}.".format(
-                low_evidence_max,
-                "N/A" if math.isinf(high_threshold) else f"{high_threshold:.3f}",
-                score_median,
-                scaled_mad,
+            "Coverage thresholds: no matching evidence = 0%; low damage = >0% to <{0:.1f}%; "
+            "moderate damage = {0:.1f}% to <{1:.1f}%; high damage >= {1:.1f}%.".format(
+                moderate_coverage_threshold,
+                high_coverage_threshold,
             )
         )
         for damage_class in (
@@ -292,27 +248,46 @@ class ClassifyBuildingDamage(object):
         parameters[2].value = output_features
 
 
-def _calculate_evidence_score(count, area_sqm):
-    if area_sqm <= 0:
-        return 0.0
-    return (count / area_sqm) * 100.0
-
-
-def _robust_threshold(scores, multiplier):
-    score_median = statistics.median(scores)
-    mad = statistics.median(abs(score - score_median) for score in scores)
-    scaled_mad = 1.4826 * mad
-    return score_median, scaled_mad, score_median + (multiplier * scaled_mad)
-
-
-def _classify_score(count, score, low_evidence_max, high_threshold, scaled_mad):
-    if count == 0:
+def _classify_coverage(coverage_percent, moderate_threshold, high_threshold):
+    if coverage_percent <= 0:
         return NO_MATCH_EVIDENCE
-    if count <= low_evidence_max:
-        return LOW_EVIDENCE
-    if scaled_mad > 0 and score > high_threshold:
+    if coverage_percent >= high_threshold:
         return HIGH_EVIDENCE
-    return MODERATE_EVIDENCE
+    if coverage_percent >= moderate_threshold:
+        return MODERATE_EVIDENCE
+    return LOW_EVIDENCE
+
+
+def _calculate_overlap_areas(buildings, similar_features, messages):
+    scratch_workspace = arcpy.env.scratchGDB
+    intersections = arcpy.CreateUniqueName("damage_intersections", scratch_workspace)
+    dissolved = arcpy.CreateUniqueName("damage_overlap_dissolved", scratch_workspace)
+    overlap_areas = {}
+
+    try:
+        arcpy.analysis.PairwiseIntersect(
+            [buildings, similar_features], intersections, "ALL", None, "INPUT"
+        )
+        if int(arcpy.management.GetCount(intersections)[0]) == 0:
+            messages.addWarningMessage("No embedding polygons overlap the building polygons.")
+            return overlap_areas
+
+        arcpy.management.Dissolve(intersections, dissolved, "DMG_BID")
+        arcpy.management.AddField(dissolved, "DMG_AREA", "DOUBLE")
+        arcpy.management.CalculateGeometryAttributes(
+            dissolved,
+            [["DMG_AREA", "AREA_GEODESIC"]],
+            area_unit="SQUARE_METERS",
+        )
+        with arcpy.da.SearchCursor(dissolved, ["DMG_BID", "DMG_AREA"]) as cursor:
+            for building_id, damage_area_sqm in cursor:
+                overlap_areas[building_id] = damage_area_sqm or 0.0
+    finally:
+        for dataset in (intersections, dissolved):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+
+    return overlap_areas
 
 
 def _build_field_mappings(buildings):
@@ -332,12 +307,10 @@ def _add_output_fields(feature_class):
     field_definitions = [
         ("DMG_CLASS", "TEXT", 30),
         ("MATCH_CNT", "LONG", None),
+        ("DMG_BID", "LONG", None),
         ("BLDG_AREA", "DOUBLE", None),
-        ("EVID_SCORE", "DOUBLE", None),
-        ("SCORE_MED", "DOUBLE", None),
-        ("SCORE_MAD", "DOUBLE", None),
-        ("HIGH_THR", "DOUBLE", None),
-        ("ROBUST_Z", "DOUBLE", None),
+        ("DMG_AREA", "DOUBLE", None),
+        ("COVER_PCT", "DOUBLE", None),
     ]
 
     for field_name, field_type, field_length in field_definitions:
@@ -349,3 +322,6 @@ def _add_output_fields(feature_class):
             )
         else:
             arcpy.management.AddField(feature_class, field_name, field_type)
+
+    oid_field = arcpy.Describe(feature_class).OIDFieldName
+    arcpy.management.CalculateField(feature_class, "DMG_BID", f"!{oid_field}!")
