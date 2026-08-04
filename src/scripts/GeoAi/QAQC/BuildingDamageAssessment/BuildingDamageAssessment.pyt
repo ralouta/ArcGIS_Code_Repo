@@ -4,6 +4,7 @@ import statistics
 import arcpy
 
 
+TOOL_VERSION = "1.1.0"
 LOW_EVIDENCE = "Low / No Damage Evidence"
 POSSIBLE_DAMAGE = "Potential Damage"
 HIGH_EVIDENCE = "High Damage Evidence"
@@ -140,6 +141,7 @@ class ClassifyBuildingDamage(object):
         match_option = parameters[5].valueAsText
         search_radius = parameters[6].valueAsText or None
 
+        messages.addMessage(f"Building Damage Assessment version {TOOL_VERSION}")
         messages.addMessage("Counting similar-embedding features for each building...")
         field_mappings = _build_field_mappings(buildings)
         arcpy.analysis.SpatialJoin(
@@ -152,16 +154,21 @@ class ClassifyBuildingDamage(object):
             match_option=match_option,
             search_radius=search_radius,
         )
+        _add_output_fields(output_features)
+        arcpy.management.CalculateGeometryAttributes(
+            output_features,
+            [["BLDG_AREA", "AREA_GEODESIC"]],
+            area_unit="SQUARE_METERS",
+        )
 
         observations = []
         invalid_geometry_oids = []
         with arcpy.da.SearchCursor(
-            output_features, ["OID@", "Join_Count", "SHAPE@"]
+            output_features, ["OID@", "Join_Count", "BLDG_AREA"]
         ) as cursor:
-            for object_id, count, geometry in cursor:
+            for object_id, count, area_sqm in cursor:
                 count = count or 0
-                area_sqm = _get_area_sqm(geometry)
-                if area_sqm is None:
+                if area_sqm is None or area_sqm <= 0:
                     invalid_geometry_oids.append(object_id)
                     continue
                 score = _calculate_evidence_score(count, area_sqm)
@@ -200,8 +207,6 @@ class ClassifyBuildingDamage(object):
                 "Candidate scores have no robust spread; no building can be separated as High Damage Evidence."
             )
 
-        _add_output_fields(output_features)
-
         class_totals = {
             LOW_EVIDENCE: 0,
             POSSIBLE_DAMAGE: 0,
@@ -210,10 +215,9 @@ class ClassifyBuildingDamage(object):
         }
         fields = [
             "Join_Count",
-            "SHAPE@",
+            "BLDG_AREA",
             "DMG_CLASS",
             "MATCH_CNT",
-            "BLDG_AREA",
             "EVID_SCORE",
             "SCORE_MED",
             "SCORE_MAD",
@@ -223,9 +227,8 @@ class ClassifyBuildingDamage(object):
         with arcpy.da.UpdateCursor(output_features, fields) as cursor:
             for row in cursor:
                 count = row[0] or 0
-                geometry = row[1]
-                area_sqm = _get_area_sqm(geometry)
-                if area_sqm is None:
+                area_sqm = row[1]
+                if area_sqm is None or area_sqm <= 0:
                     score = None
                     damage_class = INVALID_GEOMETRY
                     robust_z = None
@@ -242,12 +245,11 @@ class ClassifyBuildingDamage(object):
 
                 row[2] = damage_class
                 row[3] = count
-                row[4] = area_sqm
-                row[5] = score
-                row[6] = score_median
-                row[7] = scaled_mad
-                row[8] = None if math.isinf(high_threshold) else high_threshold
-                row[9] = robust_z
+                row[4] = score
+                row[5] = score_median
+                row[6] = scaled_mad
+                row[7] = None if math.isinf(high_threshold) else high_threshold
+                row[8] = robust_z
                 cursor.updateRow(row)
                 class_totals[damage_class] += 1
 
@@ -274,13 +276,6 @@ class ClassifyBuildingDamage(object):
         )
 
         parameters[2].value = output_features
-
-
-def _get_area_sqm(geometry):
-    if geometry is None or geometry.partCount == 0 or geometry.pointCount == 0:
-        return None
-    area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS")
-    return area_sqm if area_sqm > 0 else None
 
 
 def _calculate_evidence_score(count, area_sqm):
