@@ -7,6 +7,7 @@ import arcpy
 LOW_EVIDENCE = "Low / No Damage Evidence"
 POSSIBLE_DAMAGE = "Potential Damage"
 HIGH_EVIDENCE = "High Damage Evidence"
+INVALID_GEOMETRY = "Invalid / Empty Geometry"
 OUTPUT_FIELD_NAMES = {
     "JOIN_COUNT",
     "DMG_CLASS",
@@ -153,12 +154,27 @@ class ClassifyBuildingDamage(object):
         )
 
         observations = []
-        with arcpy.da.SearchCursor(output_features, ["Join_Count", "SHAPE@"]) as cursor:
-            for count, geometry in cursor:
+        invalid_geometry_oids = []
+        with arcpy.da.SearchCursor(
+            output_features, ["OID@", "Join_Count", "SHAPE@"]
+        ) as cursor:
+            for object_id, count, geometry in cursor:
                 count = count or 0
-                area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS")
+                area_sqm = _get_area_sqm(geometry)
+                if area_sqm is None:
+                    invalid_geometry_oids.append(object_id)
+                    continue
                 score = _calculate_evidence_score(count, area_sqm)
                 observations.append((count, area_sqm, score))
+
+        if invalid_geometry_oids:
+            messages.addWarningMessage(
+                "Excluded {0} building(s) with null, empty, or zero-area geometry from the statistics. "
+                "Output object IDs: {1}".format(
+                    len(invalid_geometry_oids),
+                    ", ".join(str(object_id) for object_id in invalid_geometry_oids),
+                )
+            )
 
         candidate_scores = [
             score for count, _, score in observations if count > low_evidence_max
@@ -186,7 +202,12 @@ class ClassifyBuildingDamage(object):
 
         _add_output_fields(output_features)
 
-        class_totals = {LOW_EVIDENCE: 0, POSSIBLE_DAMAGE: 0, HIGH_EVIDENCE: 0}
+        class_totals = {
+            LOW_EVIDENCE: 0,
+            POSSIBLE_DAMAGE: 0,
+            HIGH_EVIDENCE: 0,
+            INVALID_GEOMETRY: 0,
+        }
         fields = [
             "Join_Count",
             "SHAPE@",
@@ -202,16 +223,22 @@ class ClassifyBuildingDamage(object):
         with arcpy.da.UpdateCursor(output_features, fields) as cursor:
             for row in cursor:
                 count = row[0] or 0
-                area_sqm = row[1].getArea("GEODESIC", "SQUAREMETERS")
-                score = _calculate_evidence_score(count, area_sqm)
-                damage_class = _classify_score(
-                    count, score, low_evidence_max, high_threshold, scaled_mad
-                )
-                robust_z = (
-                    (score - score_median) / scaled_mad
-                    if count > low_evidence_max and scaled_mad > 0
-                    else None
-                )
+                geometry = row[1]
+                area_sqm = _get_area_sqm(geometry)
+                if area_sqm is None:
+                    score = None
+                    damage_class = INVALID_GEOMETRY
+                    robust_z = None
+                else:
+                    score = _calculate_evidence_score(count, area_sqm)
+                    damage_class = _classify_score(
+                        count, score, low_evidence_max, high_threshold, scaled_mad
+                    )
+                    robust_z = (
+                        (score - score_median) / scaled_mad
+                        if count > low_evidence_max and scaled_mad > 0
+                        else None
+                    )
 
                 row[2] = damage_class
                 row[3] = count
@@ -233,7 +260,12 @@ class ClassifyBuildingDamage(object):
                 scaled_mad,
             )
         )
-        for damage_class in (LOW_EVIDENCE, POSSIBLE_DAMAGE, HIGH_EVIDENCE):
+        for damage_class in (
+            LOW_EVIDENCE,
+            POSSIBLE_DAMAGE,
+            HIGH_EVIDENCE,
+            INVALID_GEOMETRY,
+        ):
             messages.addMessage(f"{damage_class}: {class_totals[damage_class]} buildings")
 
         messages.addWarningMessage(
@@ -242,6 +274,13 @@ class ClassifyBuildingDamage(object):
         )
 
         parameters[2].value = output_features
+
+
+def _get_area_sqm(geometry):
+    if geometry is None or geometry.isEmpty:
+        return None
+    area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS")
+    return area_sqm if area_sqm > 0 else None
 
 
 def _calculate_evidence_score(count, area_sqm):
