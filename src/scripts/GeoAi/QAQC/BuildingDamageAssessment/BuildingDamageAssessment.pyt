@@ -277,7 +277,7 @@ class ClassifyBuildingDamage(object):
 
 
 def _get_area_sqm(geometry):
-    if geometry is None or geometry.isEmpty:
+    if geometry is None or geometry.partCount == 0 or geometry.pointCount == 0:
         return None
     area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS")
     return area_sqm if area_sqm > 0 else None
