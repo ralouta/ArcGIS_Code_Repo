@@ -4,11 +4,11 @@ import statistics
 import arcpy
 
 
-TOOL_VERSION = "1.1.0"
-LOW_EVIDENCE = "Low / No Damage Evidence"
-POSSIBLE_DAMAGE = "Potential Damage"
+TOOL_VERSION = "1.2.0"
+NO_MATCH_EVIDENCE = "No Matching Damage Evidence"
+LOW_EVIDENCE = "Low Damage Evidence"
+MODERATE_EVIDENCE = "Moderate Damage Evidence"
 HIGH_EVIDENCE = "High Damage Evidence"
-INVALID_GEOMETRY = "Invalid / Empty Geometry"
 OUTPUT_FIELD_NAMES = {
     "JOIN_COUNT",
     "DMG_CLASS",
@@ -65,7 +65,7 @@ class ClassifyBuildingDamage(object):
         )
 
         low_evidence_max = arcpy.Parameter(
-            displayName="Maximum Match Count for Low / No Damage Evidence",
+            displayName="Maximum Match Count for Low Damage Evidence",
             name="low_evidence_max",
             datatype="GPLong",
             parameterType="Optional",
@@ -80,7 +80,7 @@ class ClassifyBuildingDamage(object):
             parameterType="Optional",
             direction="Input",
         )
-        robust_multiplier.value = 3.0
+        robust_multiplier.value = 2.0
 
         match_option = arcpy.Parameter(
             displayName="Spatial Match Option",
@@ -122,8 +122,8 @@ class ClassifyBuildingDamage(object):
         return
 
     def updateMessages(self, parameters):
-        if parameters[3].value is not None and int(parameters[3].value) < 0:
-            parameters[3].setErrorMessage("The low-evidence match count must be zero or greater.")
+        if parameters[3].value is not None and int(parameters[3].value) < 1:
+            parameters[3].setErrorMessage("The low-damage match count must be one or greater.")
 
         if parameters[4].value is not None and float(parameters[4].value) < 0:
             parameters[4].setErrorMessage("The scaled-MAD multiplier must be zero or greater.")
@@ -154,6 +154,16 @@ class ClassifyBuildingDamage(object):
             match_option=match_option,
             search_radius=search_radius,
         )
+        count_before_repair = int(arcpy.management.GetCount(output_features)[0])
+        messages.addMessage("Repairing output building geometries...")
+        arcpy.management.RepairGeometry(output_features, "DELETE_NULL", "ESRI")
+        count_after_repair = int(arcpy.management.GetCount(output_features)[0])
+        removed_by_repair = count_before_repair - count_after_repair
+        if removed_by_repair:
+            messages.addWarningMessage(
+                f"Repair Geometry removed {removed_by_repair} building(s) with null geometry."
+            )
+
         _add_output_fields(output_features)
         arcpy.management.CalculateGeometryAttributes(
             output_features,
@@ -161,27 +171,34 @@ class ClassifyBuildingDamage(object):
             area_unit="SQUARE_METERS",
         )
 
+        invalid_area_oids = []
+        with arcpy.da.UpdateCursor(output_features, ["OID@", "BLDG_AREA"]) as cursor:
+            for object_id, area_sqm in cursor:
+                if area_sqm is None or area_sqm <= 0:
+                    invalid_area_oids.append(object_id)
+                    cursor.deleteRow()
+
+        if invalid_area_oids:
+            object_id_preview = ", ".join(
+                str(object_id) for object_id in invalid_area_oids[:20]
+            )
+            if len(invalid_area_oids) > 20:
+                object_id_preview += ", ..."
+            messages.addWarningMessage(
+                "Excluded {0} building(s) with empty or zero-area geometry. "
+                "Output object IDs before deletion: {1}".format(
+                    len(invalid_area_oids), object_id_preview
+                )
+            )
+
         observations = []
-        invalid_geometry_oids = []
         with arcpy.da.SearchCursor(
             output_features, ["OID@", "Join_Count", "BLDG_AREA"]
         ) as cursor:
             for object_id, count, area_sqm in cursor:
                 count = count or 0
-                if area_sqm is None or area_sqm <= 0:
-                    invalid_geometry_oids.append(object_id)
-                    continue
                 score = _calculate_evidence_score(count, area_sqm)
                 observations.append((count, area_sqm, score))
-
-        if invalid_geometry_oids:
-            messages.addWarningMessage(
-                "Excluded {0} building(s) with null, empty, or zero-area geometry from the statistics. "
-                "Output object IDs: {1}".format(
-                    len(invalid_geometry_oids),
-                    ", ".join(str(object_id) for object_id in invalid_geometry_oids),
-                )
-            )
 
         candidate_scores = [
             score for count, _, score in observations if count > low_evidence_max
@@ -195,7 +212,7 @@ class ClassifyBuildingDamage(object):
             scaled_mad = 0.0
             high_threshold = math.inf
             messages.addWarningMessage(
-                "No buildings exceeded the low-evidence cutoff; all buildings will be classified as Low / No Damage Evidence."
+                "No buildings exceeded the low-damage cutoff; no Moderate or High Damage Evidence classes can be assigned."
             )
 
         if 0 < len(candidate_scores) < 5:
@@ -208,10 +225,10 @@ class ClassifyBuildingDamage(object):
             )
 
         class_totals = {
+            NO_MATCH_EVIDENCE: 0,
             LOW_EVIDENCE: 0,
-            POSSIBLE_DAMAGE: 0,
+            MODERATE_EVIDENCE: 0,
             HIGH_EVIDENCE: 0,
-            INVALID_GEOMETRY: 0,
         }
         fields = [
             "Join_Count",
@@ -228,20 +245,15 @@ class ClassifyBuildingDamage(object):
             for row in cursor:
                 count = row[0] or 0
                 area_sqm = row[1]
-                if area_sqm is None or area_sqm <= 0:
-                    score = None
-                    damage_class = INVALID_GEOMETRY
-                    robust_z = None
-                else:
-                    score = _calculate_evidence_score(count, area_sqm)
-                    damage_class = _classify_score(
-                        count, score, low_evidence_max, high_threshold, scaled_mad
-                    )
-                    robust_z = (
-                        (score - score_median) / scaled_mad
-                        if count > low_evidence_max and scaled_mad > 0
-                        else None
-                    )
+                score = _calculate_evidence_score(count, area_sqm)
+                damage_class = _classify_score(
+                    count, score, low_evidence_max, high_threshold, scaled_mad
+                )
+                robust_z = (
+                    (score - score_median) / scaled_mad
+                    if count > low_evidence_max and scaled_mad > 0
+                    else None
+                )
 
                 row[2] = damage_class
                 row[3] = count
@@ -254,7 +266,8 @@ class ClassifyBuildingDamage(object):
                 class_totals[damage_class] += 1
 
         messages.addMessage(
-            "Screening thresholds: low evidence <= {0} matches; high evidence score > {1}. "
+            "Screening thresholds: no matching evidence = 0; low damage = 1 to {0} matches; "
+            "high evidence score > {1}. "
             "Candidate median = {2:.3f}, scaled MAD = {3:.3f}.".format(
                 low_evidence_max,
                 "N/A" if math.isinf(high_threshold) else f"{high_threshold:.3f}",
@@ -263,16 +276,17 @@ class ClassifyBuildingDamage(object):
             )
         )
         for damage_class in (
+            NO_MATCH_EVIDENCE,
             LOW_EVIDENCE,
-            POSSIBLE_DAMAGE,
+            MODERATE_EVIDENCE,
             HIGH_EVIDENCE,
-            INVALID_GEOMETRY,
         ):
             messages.addMessage(f"{damage_class}: {class_totals[damage_class]} buildings")
 
         messages.addWarningMessage(
             "These classes indicate relative image evidence, not confirmed structural damage. "
-            "Validate High Damage Evidence buildings against post-event imagery or field observations."
+            "No Matching Damage Evidence may also mean the building is outside the embedding analysis extent. "
+            "Validate Moderate and High Damage Evidence against post-event imagery or field observations."
         )
 
         parameters[2].value = output_features
@@ -292,11 +306,13 @@ def _robust_threshold(scores, multiplier):
 
 
 def _classify_score(count, score, low_evidence_max, high_threshold, scaled_mad):
+    if count == 0:
+        return NO_MATCH_EVIDENCE
     if count <= low_evidence_max:
         return LOW_EVIDENCE
     if scaled_mad > 0 and score > high_threshold:
         return HIGH_EVIDENCE
-    return POSSIBLE_DAMAGE
+    return MODERATE_EVIDENCE
 
 
 def _build_field_mappings(buildings):
