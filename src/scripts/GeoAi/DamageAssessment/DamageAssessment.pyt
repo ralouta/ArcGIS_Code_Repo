@@ -8,54 +8,56 @@ import urllib.request
 import arcpy
 
 
-TOOL_VERSION = "3.0.0"
+TOOL_VERSION = "4.2.1"
+WEB_MERCATOR_WKIDS = {3857, 102100}
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
 WAYBACK_CATALOG_URL = (
     "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json"
 )
 PORTAL_ITEM_URL = "https://www.arcgis.com/sharing/rest/content/items/{item_id}"
+DEFAULT_MODEL_CACHE = os.path.join(
+    os.path.expanduser("~"), "Documents", "ArcGIS", "Packages", "DamageAssessment"
+)
 FEATURE_PROFILES = {
     "Buildings": {
         "prompt": "building",
         "detection_cell_size": 0.3,
-        "embedding_cell_size": 0.3125,
         "regularize": True,
     },
     "Bridges": {
         "prompt": "bridge",
         "detection_cell_size": 0.3,
-        "embedding_cell_size": 0.3125,
         "regularize": False,
     },
     "Roads": {
         "prompt": "road",
         "detection_cell_size": 0.5,
-        "embedding_cell_size": 0.5,
         "regularize": False,
     },
     "Debris": {
         "prompt": "debris",
         "detection_cell_size": 0.2,
-        "embedding_cell_size": 0.2,
         "regularize": False,
     },
     "Vehicles": {
         "prompt": "vehicle",
         "detection_cell_size": 0.15,
-        "embedding_cell_size": 0.15,
+        "regularize": False,
+    },
+    "Trees": {
+        "prompt": "tree",
+        "detection_cell_size": 0.2,
         "regularize": False,
     },
     "Utility Poles": {
         "prompt": "utility pole",
         "detection_cell_size": 0.1,
-        "embedding_cell_size": 0.1,
         "regularize": False,
     },
     "Custom": {
         "prompt": "",
         "detection_cell_size": 0.3,
-        "embedding_cell_size": 0.3125,
         "regularize": False,
     },
 }
@@ -78,8 +80,8 @@ OUTPUT_FIELD_NAMES = {
 class Toolbox(object):
     def __init__(self):
         self.label = "Damage Assessment"
-        self.alias = "damageassessment"
-        self.tools = [AutomatedDamageAssessment, ClassifyBuildingDamage]
+        self.alias = "automateddamageassessment"
+        self.tools = [AutomatedDamageAssessment]
 
 
 class AutomatedDamageAssessment(object):
@@ -95,18 +97,17 @@ class AutomatedDamageAssessment(object):
     POST_IMAGE = 9
     SAMPLE_POINTS = 10
     EMBEDDING_MODEL = 11
-    MODEL_CACHE = 12
-    GPU_ID = 13
-    BATCH_SIZE = 14
-    EMBEDDING_CELL_SIZE = 15
-    GRID_SIZE = 16
-    SIMILARITY_THRESHOLD = 17
-    OUT_CLASSIFIED = 18
-    MODERATE_THRESHOLD = 19
-    HIGH_THRESHOLD = 20
-    OUT_TARGET = 21
-    OUT_EMBEDDINGS = 22
-    OUT_SIMILAR = 23
+    GPU_ID = 12
+    BATCH_SIZE = 13
+    GRID_SIZE = 14
+    SIMILARITY_THRESHOLD = 15
+    OUT_CLASSIFIED = 16
+    MODERATE_THRESHOLD = 17
+    HIGH_THRESHOLD = 18
+    OUT_TARGET = 19
+    OUT_EMBEDDINGS = 20
+    OUT_SIMILAR = 21
+    KEEP_INTERMEDIATE = 22
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
@@ -116,6 +117,7 @@ class AutomatedDamageAssessment(object):
             "user-marked damage examples, and classifies target features by overlap."
         )
         self.canRunInBackground = False
+        self.environments = ["extent"]
         self._last_feature_type = None
 
     def getParameterInfo(self):
@@ -142,7 +144,7 @@ class AutomatedDamageAssessment(object):
         feature_type.category = "1. Target Features"
 
         aoi = arcpy.Parameter(
-            displayName="Area of Interest",
+            displayName="Area of Interest Polygon (Optional; Overrides Extent Environment)",
             name="in_aoi",
             datatype="GPFeatureLayer",
             parameterType="Optional",
@@ -164,16 +166,18 @@ class AutomatedDamageAssessment(object):
         pre_source.category = "2. Pre-Event Feature Extraction"
 
         pre_image = arcpy.Parameter(
-            displayName="Pre-Event Imagery",
+            displayName="Pre-Event Imagery Layer (from Active Map)",
             name="in_pre_event_imagery",
-            datatype="GPRasterLayer",
+            datatype="GPString",
             parameterType="Optional",
             direction="Input",
         )
+        pre_image.filter.type = "ValueList"
+        pre_image.filter.list = _get_active_map_raster_layer_names()
         pre_image.category = "2. Pre-Event Feature Extraction"
 
         wayback = arcpy.Parameter(
-            displayName="World Imagery Wayback Release",
+            displayName="World Imagery Wayback Archive Release",
             name="wayback_release",
             datatype="GPString",
             parameterType="Optional",
@@ -213,12 +217,14 @@ class AutomatedDamageAssessment(object):
         detection_cell_size.category = "2. Pre-Event Feature Extraction"
 
         post_image = arcpy.Parameter(
-            displayName="Post-Event Imagery",
+            displayName="Post-Event Imagery Layer (from Active Map)",
             name="in_post_event_imagery",
-            datatype="GPRasterLayer",
+            datatype="GPString",
             parameterType="Required",
             direction="Input",
         )
+        post_image.filter.type = "ValueList"
+        post_image.filter.list = _get_active_map_raster_layer_names()
         post_image.category = "3. Post-Event Similarity"
 
         sample_points = arcpy.Parameter(
@@ -241,18 +247,6 @@ class AutomatedDamageAssessment(object):
         embedding_model.filter.list = ["dlpk"]
         embedding_model.category = "3. Post-Event Similarity"
 
-        model_cache = arcpy.Parameter(
-            displayName="Downloaded Model Cache",
-            name="model_cache",
-            datatype="DEFolder",
-            parameterType="Optional",
-            direction="Input",
-        )
-        model_cache.value = os.path.join(
-            os.path.expanduser("~"), "Documents", "ArcGIS", "Packages", "DamageAssessment"
-        )
-        model_cache.category = "3. Post-Event Similarity"
-
         gpu_id = arcpy.Parameter(
             displayName="GPU ID",
             name="gpu_id",
@@ -273,24 +267,13 @@ class AutomatedDamageAssessment(object):
         batch_size.value = 16
         batch_size.category = "3. Post-Event Similarity"
 
-        embedding_cell_size = arcpy.Parameter(
-            displayName="Embedding Cell Size",
-            name="embedding_cell_size",
-            datatype="GPDouble",
-            parameterType="Optional",
-            direction="Input",
-        )
-        embedding_cell_size.value = FEATURE_PROFILES["Buildings"]["embedding_cell_size"]
-        embedding_cell_size.category = "3. Post-Event Similarity"
-
         grid_size = arcpy.Parameter(
-            displayName="Embedding Grid Size (0 = Auto)",
+            displayName="Embedding Grid Size (Optional; Blank = Auto)",
             name="grid_size",
             datatype="GPLong",
             parameterType="Optional",
             direction="Input",
         )
-        grid_size.value = 0
         grid_size.category = "3. Post-Event Similarity"
 
         similarity_threshold = arcpy.Parameter(
@@ -359,6 +342,16 @@ class AutomatedDamageAssessment(object):
         )
         out_similar.category = "4. Outputs and Classification"
 
+        keep_intermediate = arcpy.Parameter(
+            displayName="Keep Intermediate Data",
+            name="keep_intermediate_data",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input",
+        )
+        keep_intermediate.value = True
+        keep_intermediate.category = "4. Outputs and Classification"
+
         return [
             in_target,
             feature_type,
@@ -372,10 +365,8 @@ class AutomatedDamageAssessment(object):
             post_image,
             sample_points,
             embedding_model,
-            model_cache,
             gpu_id,
             batch_size,
-            embedding_cell_size,
             grid_size,
             similarity_threshold,
             out_classified,
@@ -384,6 +375,7 @@ class AutomatedDamageAssessment(object):
             out_target,
             out_embeddings,
             out_similar,
+            keep_intermediate,
         ]
 
     def updateParameters(self, parameters):
@@ -404,6 +396,10 @@ class AutomatedDamageAssessment(object):
             parameters[self.PRE_IMAGE].enabled = pre_source == "Input Imagery"
             parameters[self.WAYBACK].enabled = pre_source == "World Imagery Wayback"
 
+        raster_layer_names = _get_active_map_raster_layer_names()
+        parameters[self.PRE_IMAGE].filter.list = raster_layer_names
+        parameters[self.POST_IMAGE].filter.list = raster_layer_names
+
         feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
         parameters[self.CUSTOM_PROMPT].enabled = (
             not has_target_features and feature_type == "Custom"
@@ -411,17 +407,12 @@ class AutomatedDamageAssessment(object):
         if feature_type != self._last_feature_type:
             profile = FEATURE_PROFILES[feature_type]
             parameters[self.DETECTION_CELL_SIZE].value = profile["detection_cell_size"]
-            parameters[self.EMBEDDING_CELL_SIZE].value = profile["embedding_cell_size"]
             self._last_feature_type = feature_type
         return
 
     def updateMessages(self, parameters):
         has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
         if not has_target_features:
-            if not parameters[self.AOI].valueAsText:
-                parameters[self.AOI].setErrorMessage(
-                    "An area of interest is required when target features are not supplied."
-                )
             pre_source = parameters[self.PRE_SOURCE].valueAsText
             if pre_source == "Input Imagery" and not parameters[self.PRE_IMAGE].valueAsText:
                 parameters[self.PRE_IMAGE].setErrorMessage(
@@ -441,11 +432,11 @@ class AutomatedDamageAssessment(object):
             _set_positive_error(
                 parameters[self.DETECTION_CELL_SIZE], "Detection cell size"
             )
-        _set_positive_error(parameters[self.EMBEDDING_CELL_SIZE], "Embedding cell size")
-
         grid_size = parameters[self.GRID_SIZE].value
-        if grid_size is not None and int(grid_size) < 0:
-            parameters[self.GRID_SIZE].setErrorMessage("Grid size must be 0 (Auto) or greater.")
+        if grid_size is not None and int(grid_size) < 1:
+            parameters[self.GRID_SIZE].setErrorMessage(
+                "Grid size must be a positive integer or left blank for Auto."
+            )
 
         similarity = parameters[self.SIMILARITY_THRESHOLD].value
         if similarity is not None and not 0 < float(similarity) <= 1:
@@ -456,6 +447,18 @@ class AutomatedDamageAssessment(object):
         batch_size = parameters[self.BATCH_SIZE].value
         if batch_size is not None and int(batch_size) < 1:
             parameters[self.BATCH_SIZE].setErrorMessage("Batch size must be at least 1.")
+
+        sample_points = parameters[self.SAMPLE_POINTS].valueAsText
+        if sample_points:
+            try:
+                sample_count = int(arcpy.management.GetCount(sample_points)[0])
+            except Exception:
+                sample_count = None
+            if sample_count is not None and not 6 <= sample_count <= 20:
+                parameters[self.SAMPLE_POINTS].setErrorMessage(
+                    "Provide 6-20 damage example point features; "
+                    f"the selected layer contains {sample_count}."
+                )
 
         _validate_coverage_parameters(
             parameters[self.MODERATE_THRESHOLD], parameters[self.HIGH_THRESHOLD]
@@ -473,22 +476,25 @@ class AutomatedDamageAssessment(object):
         feature_type = parameters[self.FEATURE_TYPE].valueAsText
         aoi = parameters[self.AOI].valueAsText
         pre_source = parameters[self.PRE_SOURCE].valueAsText or "Input Imagery"
-        pre_image = parameters[self.PRE_IMAGE].valueAsText
+        pre_image = _resolve_active_map_raster_layer(parameters[self.PRE_IMAGE].valueAsText)
         wayback_release = parameters[self.WAYBACK].valueAsText
         sam_model = parameters[self.SAM_MODEL].valueAsText
         custom_prompt = parameters[self.CUSTOM_PROMPT].valueAsText
-        post_image = parameters[self.POST_IMAGE].valueAsText
+        post_image = _resolve_active_map_raster_layer(parameters[self.POST_IMAGE].valueAsText)
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
         embedding_model = parameters[self.EMBEDDING_MODEL].valueAsText
-        model_cache = parameters[self.MODEL_CACHE].valueAsText
         gpu_id = int(parameters[self.GPU_ID].value or 0)
         batch_size = int(parameters[self.BATCH_SIZE].value or 16)
-        embedding_cell_size = float(parameters[self.EMBEDDING_CELL_SIZE].value or 0.3125)
-        requested_grid_size = int(parameters[self.GRID_SIZE].value or 0)
+        requested_grid_size = (
+            int(parameters[self.GRID_SIZE].value)
+            if parameters[self.GRID_SIZE].value is not None
+            else None
+        )
         similarity_threshold = float(parameters[self.SIMILARITY_THRESHOLD].value or 0.55)
         out_classified = parameters[self.OUT_CLASSIFIED].valueAsText
         moderate_threshold = float(parameters[self.MODERATE_THRESHOLD].value or 20.0)
         high_threshold = float(parameters[self.HIGH_THRESHOLD].value or 50.0)
+        keep_intermediate = parameters[self.KEEP_INTERMEDIATE].value is not False
 
         output_workspace = _geodatabase_workspace(out_classified)
         if not output_workspace:
@@ -498,10 +504,20 @@ class AutomatedDamageAssessment(object):
             )
         scratch_workspace = arcpy.env.scratchGDB
         messages.addMessage(f"Automated Damage Assessment version {TOOL_VERSION}")
+        messages.addMessage(f"Feature type: {feature_type}")
+        post_image = _ensure_web_mercator_raster(
+            post_image, "Post-event imagery", messages
+        )
 
         target_features = in_target
+        generated_target_features = None
+        out_embeddings = None
+        out_similar = None
         if target_features:
             messages.addMessage("Using user-supplied target features; pre-event extraction is skipped.")
+            analysis_extent, analysis_spatial_reference, extent_source = (
+                _resolve_analysis_extent(None, target_features, False)
+            )
         else:
             detection_cell_size = float(
                 parameters[self.DETECTION_CELL_SIZE].value
@@ -510,18 +526,28 @@ class AutomatedDamageAssessment(object):
             source_imagery = pre_image
             if pre_source == "World Imagery Wayback":
                 source_imagery = _resolve_wayback_imagery(wayback_release, messages)
+            source_imagery = _ensure_web_mercator_raster(
+                source_imagery,
+                "Pre-event imagery",
+                messages,
+                assume_web_mercator=pre_source == "World Imagery Wayback",
+            )
+
+            analysis_extent, analysis_spatial_reference, extent_source = (
+                _resolve_analysis_extent(aoi, source_imagery, True)
+            )
 
             sam_model = _resolve_model(
                 sam_model,
                 SAM3_ITEM_ID,
                 "SAM3.dlpk",
-                model_cache,
                 messages,
             )
             prompt = custom_prompt or FEATURE_PROFILES[feature_type]["prompt"]
             target_features = _extract_target_features(
                 source_imagery,
-                aoi,
+                analysis_extent,
+                analysis_spatial_reference,
                 feature_type,
                 prompt,
                 sam_model,
@@ -532,22 +558,28 @@ class AutomatedDamageAssessment(object):
                 scratch_workspace,
                 messages,
             )
+            generated_target_features = target_features
 
+        messages.addMessage(f"Analysis extent source: {extent_source}")
         parameters[self.OUT_TARGET].value = target_features
         query_features = _select_damage_queries(
-            target_features, sample_points, scratch_workspace, messages
+            target_features,
+            sample_points,
+            feature_type,
+            scratch_workspace,
+            messages,
         )
 
         try:
             grid_size = requested_grid_size or _recommend_grid_size(
-                target_features, embedding_cell_size
+                target_features, post_image
             )
-            messages.addMessage(f"Embedding grid size: {grid_size}")
+            grid_source = "user supplied" if requested_grid_size else "Auto recommendation"
+            messages.addMessage(f"Embedding grid size: {grid_size} ({grid_source})")
             embedding_model = _resolve_model(
                 embedding_model,
                 EO_DINO_ITEM_ID,
                 "EO-DINO.dlpk",
-                model_cache,
                 messages,
             )
 
@@ -555,14 +587,10 @@ class AutomatedDamageAssessment(object):
                 "Damage_PostEvent_Embeddings", output_workspace
             )
             output_spatial_reference = arcpy.Describe(target_features).spatialReference
-            embedding_cell_size_units = _meters_to_spatial_units(
-                embedding_cell_size, output_spatial_reference
-            )
             messages.addMessage("Generating embeddings from post-event imagery...")
             with arcpy.EnvManager(
                 gpuId=gpu_id,
-                extent=arcpy.Describe(target_features).extent,
-                cellSize=embedding_cell_size_units,
+                extent=analysis_extent,
                 processorType="GPU",
                 outputCoordinateSystem=output_spatial_reference,
             ):
@@ -604,11 +632,54 @@ class AutomatedDamageAssessment(object):
         finally:
             if arcpy.Exists(query_features):
                 arcpy.management.Delete(query_features)
+            if not keep_intermediate:
+                messages.addMessage("Deleting generated intermediate data...")
+                for dataset in (
+                    out_similar,
+                    out_embeddings,
+                    generated_target_features,
+                ):
+                    if dataset and arcpy.Exists(dataset):
+                        arcpy.management.Delete(dataset)
+                parameters[self.OUT_TARGET].value = None
+                parameters[self.OUT_EMBEDDINGS].value = None
+                parameters[self.OUT_SIMILAR].value = None
 
 
 def _set_positive_error(parameter, label):
     if parameter.value is not None and float(parameter.value) <= 0:
         parameter.setErrorMessage(f"{label} must be greater than 0.")
+
+
+def _get_environment_extent():
+    environment_extent = arcpy.env.extent
+    if environment_extent is None or str(environment_extent).strip().lower() in (
+        "",
+        "none",
+    ):
+        return None
+    return environment_extent
+
+
+def _resolve_analysis_extent(aoi, fallback_dataset, require_explicit_extent):
+    if aoi:
+        description = arcpy.Describe(aoi)
+        return description.extent, description.spatialReference, "Area of Interest polygon"
+
+    environment_extent = _get_environment_extent()
+    if environment_extent:
+        spatial_reference = getattr(environment_extent, "spatialReference", None)
+        if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
+            spatial_reference = arcpy.Describe(fallback_dataset).spatialReference
+        return environment_extent, spatial_reference, "Extent environment"
+
+    if require_explicit_extent:
+        raise arcpy.ExecuteError(
+            "Provide an Area of Interest polygon or set the Extent environment."
+        )
+
+    description = arcpy.Describe(fallback_dataset)
+    return description.extent, description.spatialReference, "input target features"
 
 
 def _geodatabase_workspace(dataset_path):
@@ -655,6 +726,90 @@ def _request_json(url):
     request = urllib.request.Request(url, headers={"User-Agent": "ArcGIS-Damage-Assessment"})
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
+
+
+def _get_active_map_raster_layers():
+    try:
+        active_map = arcpy.mp.ArcGISProject("CURRENT").activeMap
+    except Exception:
+        active_map = None
+    if active_map is None:
+        return []
+    return [
+        layer
+        for layer in active_map.listLayers()
+        if getattr(layer, "isRasterLayer", False)
+    ]
+
+
+def _get_active_map_raster_layer_names():
+    return [
+        getattr(layer, "longName", layer.name)
+        for layer in _get_active_map_raster_layers()
+    ]
+
+
+def _resolve_active_map_raster_layer(layer_name):
+    if not layer_name:
+        return None
+    for layer in _get_active_map_raster_layers():
+        if layer_name in (layer.name, getattr(layer, "longName", layer.name)):
+            return layer
+    raise arcpy.ExecuteError(
+        f"Raster layer '{layer_name}' is no longer available in the active map. "
+        "Refresh the tool and choose a layer from the dropdown."
+    )
+
+
+def _ensure_web_mercator_raster(
+    raster, label, messages, assume_web_mercator=False
+):
+    if assume_web_mercator:
+        return raster
+
+    spatial_reference = getattr(arcpy.Describe(raster), "spatialReference", None)
+    wkid = (
+        getattr(spatial_reference, "factoryCode", 0)
+        or getattr(spatial_reference, "latestWkid", 0)
+        or 0
+    )
+    if wkid in WEB_MERCATOR_WKIDS:
+        return raster
+    if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
+        raise arcpy.ExecuteError(
+            f"{label} must have a defined coordinate system before it can be reprojected."
+        )
+
+    messages.addMessage(
+        f"Applying the Reproject raster function to {label.lower()}: "
+        f"{spatial_reference.name} -> WGS 1984 Web Mercator (Auxiliary Sphere)."
+    )
+    raster_input = _to_raster_function_input(raster, label)
+    return arcpy.ia.Reproject(raster_input, arcpy.SpatialReference(3857))
+
+
+def _to_raster_function_input(raster, label):
+    candidates = []
+    try:
+        data_source = raster.dataSource
+    except Exception:
+        data_source = None
+    if data_source:
+        candidates.append(data_source)
+    catalog_path = getattr(arcpy.Describe(raster), "catalogPath", None)
+    if catalog_path and catalog_path not in candidates:
+        candidates.append(catalog_path)
+    candidates.append(raster)
+
+    for candidate in candidates:
+        try:
+            return arcpy.Raster(candidate)
+        except Exception:
+            continue
+    raise arcpy.ExecuteError(
+        f"{label} could not be opened as a raster for the Reproject raster function. "
+        "Add the source raster dataset or mosaic dataset to the active map and select it."
+    )
 
 
 def _get_wayback_releases():
@@ -709,12 +864,11 @@ def _resolve_wayback_imagery(release_title, messages):
         )
 
 
-def _resolve_model(local_path, item_id, file_name, cache_folder, messages):
+def _resolve_model(local_path, item_id, file_name, messages):
     if local_path:
         messages.addMessage(f"Using custom model: {local_path}")
         return local_path
-    if not cache_folder:
-        raise arcpy.ExecuteError("Choose a model cache folder or provide local model files.")
+    cache_folder = DEFAULT_MODEL_CACHE
 
     os.makedirs(cache_folder, exist_ok=True)
     model_path = os.path.join(cache_folder, file_name)
@@ -748,7 +902,8 @@ def _resolve_model(local_path, item_id, file_name, cache_folder, messages):
 
 def _extract_target_features(
     source_imagery,
-    aoi,
+    analysis_extent,
+    spatial_reference,
     feature_type,
     prompt,
     sam_model,
@@ -765,14 +920,13 @@ def _extract_target_features(
     target_features = arcpy.CreateUniqueName(
         f"Damage_{safe_feature_type}", output_workspace
     )
-    spatial_reference = arcpy.Describe(aoi).spatialReference
     cell_size_units = _meters_to_spatial_units(cell_size, spatial_reference)
 
     try:
         messages.addMessage(f"Detecting {feature_type.lower()} with SAM3...")
         with arcpy.EnvManager(
             gpuId=gpu_id,
-            extent=arcpy.Describe(aoi).extent,
+            extent=analysis_extent,
             cellSize=cell_size_units,
             processorType="GPU",
             outputCoordinateSystem=spatial_reference,
@@ -794,6 +948,8 @@ def _extract_target_features(
                 use_pixelspace="NO_PIXELSPACE",
                 in_objects_of_interest=None,
             )
+        raw_detection_count = int(arcpy.management.GetCount(raw_features)[0])
+        messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
 
         messages.addMessage("Applying nonmaximum suppression to extracted features...")
         arcpy.ia.NonMaximumSuppression(
@@ -803,27 +959,16 @@ def _extract_target_features(
             class_value_field="Class",
             max_overlap_ratio=0.1,
         )
+        detection_count = int(arcpy.management.GetCount(nms_features)[0])
+        messages.addMessage(f"SAM3 detections after NMS: {detection_count}")
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
-            messages.addMessage("Regularizing building footprints...")
-            tolerance_units = _meters_to_spatial_units(10.0, spatial_reference)
-            densification_units = _meters_to_spatial_units(1.0, spatial_reference)
-            precision_units = _meters_to_spatial_units(0.25, spatial_reference)
-            min_radius_units = _meters_to_spatial_units(0.1, spatial_reference)
-            max_radius_units = _meters_to_spatial_units(1000000.0, spatial_reference)
-            arcpy.ddd.RegularizeBuildingFootprint(
-                in_features=nms_features,
-                out_feature_class=target_features,
-                method="RIGHT_ANGLES",
-                tolerance=tolerance_units,
-                densification=densification_units,
-                precision=precision_units,
-                diagonal_penalty=1.5,
-                min_radius=min_radius_units,
-                max_radius=max_radius_units,
-                alignment_feature=None,
-                alignment_tolerance=None,
-                tolerance_type="DISTANCE",
+            _regularize_building_footprints(
+                nms_features,
+                target_features,
+                spatial_reference,
+                scratch_workspace,
+                messages,
             )
         else:
             arcpy.management.CopyFeatures(nms_features, target_features)
@@ -839,7 +984,87 @@ def _extract_target_features(
     return target_features
 
 
-def _select_damage_queries(target_features, sample_points, scratch_workspace, messages):
+def _regularize_building_footprints(
+    input_features,
+    output_features,
+    spatial_reference,
+    scratch_workspace,
+    messages,
+):
+    area_field = "REG_AREA"
+    tolerance_bands = (
+        (0, 50, 0.5),
+        (50, 200, 1.0),
+        (200, 500, 1.5),
+        (500, 1000, 2.5),
+        (1000, 4500, 3.5),
+        (4500, None, 5.0),
+    )
+    building_layer = arcpy.CreateUniqueName("building_regularization")
+    regularized_outputs = []
+
+    try:
+        arcpy.management.AddField(input_features, area_field, "DOUBLE")
+        arcpy.management.CalculateGeometryAttributes(
+            input_features,
+            [[area_field, "AREA_GEODESIC"]],
+            area_unit="SQUARE_METERS",
+        )
+        arcpy.management.MakeFeatureLayer(input_features, building_layer)
+
+        for minimum_area, maximum_area, tolerance_meters in tolerance_bands:
+            where_clause = f"{area_field} > {minimum_area}"
+            if maximum_area is not None:
+                where_clause += f" AND {area_field} <= {maximum_area}"
+            arcpy.management.SelectLayerByAttribute(
+                building_layer, "NEW_SELECTION", where_clause
+            )
+            selected_count = int(arcpy.management.GetCount(building_layer)[0])
+            if selected_count == 0:
+                continue
+
+            messages.addMessage(
+                f"Regularizing {selected_count} building footprint(s) with a "
+                f"{tolerance_meters:g} meter tolerance..."
+            )
+            regularized_output = arcpy.CreateUniqueName(
+                "regularized_buildings", scratch_workspace
+            )
+            regularized_outputs.append(regularized_output)
+            arcpy.ddd.RegularizeBuildingFootprint(
+                in_features=building_layer,
+                out_feature_class=regularized_output,
+                method="RIGHT_ANGLES",
+                tolerance=_meters_to_spatial_units(
+                    tolerance_meters, spatial_reference
+                ),
+            )
+
+        if not regularized_outputs:
+            raise arcpy.ExecuteError(
+                "No valid building footprints were available for regularization."
+            )
+        arcpy.management.Merge(regularized_outputs, output_features)
+    finally:
+        if arcpy.Exists(building_layer):
+            arcpy.management.Delete(building_layer)
+        for dataset in regularized_outputs:
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+
+
+def _select_damage_queries(
+    target_features,
+    sample_points,
+    feature_type,
+    scratch_workspace,
+    messages,
+):
+    if feature_type == "Roads":
+        return _create_road_damage_queries(
+            target_features, sample_points, scratch_workspace, messages
+        )
+
     target_layer = arcpy.CreateUniqueName("damage_target_selection")
     query_features = arcpy.CreateUniqueName("damage_queries", scratch_workspace)
     try:
@@ -863,14 +1088,80 @@ def _select_damage_queries(target_features, sample_points, scratch_workspace, me
     return query_features
 
 
-def _recommend_grid_size(target_features, cell_size):
+def _create_road_damage_queries(
+    target_features, sample_points, scratch_workspace, messages
+):
+    sample_count = int(arcpy.management.GetCount(sample_points)[0])
+    if not 6 <= sample_count <= 20:
+        raise arcpy.ExecuteError(
+            "Road damage examples require 6-20 point features; "
+            f"{sample_count} point feature(s) were provided."
+        )
+
+    sample_layer = arcpy.CreateUniqueName("road_damage_sample_qa")
+    query_features = arcpy.CreateUniqueName("road_damage_queries", scratch_workspace)
+    try:
+        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
+        arcpy.management.SelectLayerByLocation(
+            sample_layer, "INTERSECT", target_features, None, "NEW_SELECTION"
+        )
+        intersecting_count = int(arcpy.management.GetCount(sample_layer)[0])
+
+        arcpy.management.SelectLayerByLocation(
+            sample_layer,
+            "WITHIN_A_DISTANCE",
+            target_features,
+            "10 Meters",
+            "NEW_SELECTION",
+        )
+        valid_count = int(arcpy.management.GetCount(sample_layer)[0])
+        nearby_count = valid_count - intersecting_count
+        rejected_count = sample_count - valid_count
+
+        messages.addMessage(
+            "Road sample QA: "
+            f"{intersecting_count} on inferred roads, "
+            f"{nearby_count} within 10 meters, "
+            f"{rejected_count} farther away."
+        )
+        if rejected_count:
+            messages.addWarningMessage(
+                f"Ignored {rejected_count} road damage point(s) more than 10 meters "
+                "from an inferred road."
+            )
+        if valid_count < 6:
+            raise arcpy.ExecuteError(
+                "At least 6 road damage points must intersect or be within 10 meters "
+                f"of an inferred road; {valid_count} valid point(s) remain."
+            )
+
+        arcpy.analysis.PairwiseBuffer(
+            in_features=sample_layer,
+            out_feature_class=query_features,
+            buffer_distance_or_field="10 Meters",
+            dissolve_option="NONE",
+        )
+        messages.addMessage(
+            f"Using {valid_count} point-centered road regions as post-event damage examples."
+        )
+        return query_features
+    except Exception:
+        if arcpy.Exists(query_features):
+            arcpy.management.Delete(query_features)
+        raise
+    finally:
+        if arcpy.Exists(sample_layer):
+            arcpy.management.Delete(sample_layer)
+
+
+def _recommend_grid_size(target_features, post_image):
     spatial_reference = arcpy.Describe(target_features).spatialReference
     meters_per_unit = spatial_reference.metersPerUnit
-    _meters_to_spatial_units(cell_size, spatial_reference)
+    _meters_to_spatial_units(1.0, spatial_reference)
     widths = []
     with arcpy.da.SearchCursor(target_features, ["SHAPE@"]) as cursor:
         for index, (geometry,) in enumerate(cursor):
-            if geometry and not geometry.isEmpty:
+            if geometry and geometry.pointCount > 0:
                 extent = geometry.extent
                 width = min(extent.width, extent.height) * meters_per_unit
                 if width > 0:
@@ -878,131 +1169,22 @@ def _recommend_grid_size(target_features, cell_size):
             if index >= 4999:
                 break
 
-    if not widths:
+    image_description = arcpy.Describe(post_image)
+    image_spatial_reference = image_description.spatialReference
+    image_cell_size = max(
+        abs(float(getattr(image_description, "meanCellWidth", 0) or 0)),
+        abs(float(getattr(image_description, "meanCellHeight", 0) or 0)),
+    )
+    image_meters_per_unit = getattr(image_spatial_reference, "metersPerUnit", None)
+    if not widths or not image_cell_size or not image_meters_per_unit:
         return 5
     median_width = statistics.median(widths)
-    estimated_size = int(round((1.5 * median_width) / (16.0 * cell_size)))
+    image_cell_size_meters = image_cell_size * image_meters_per_unit
+    estimated_size = int(round((1.5 * median_width) / (16.0 * image_cell_size_meters)))
     estimated_size = max(3, min(11, estimated_size))
     if estimated_size % 2 == 0:
         estimated_size += 1 if estimated_size < 11 else -1
     return estimated_size
-
-
-class ClassifyBuildingDamage(object):
-    def __init__(self):
-        self.label = "Classify Building Damage from Similar Embeddings"
-        self.description = (
-            "Spatially joins similar-embedding features to building polygons and "
-            "classifies damage evidence from the percentage of each building covered by embedding polygons."
-        )
-        self.canRunInBackground = False
-
-    def getParameterInfo(self):
-        buildings = arcpy.Parameter(
-            displayName="Input Building Polygons",
-            name="in_buildings",
-            datatype="GPFeatureLayer",
-            parameterType="Required",
-            direction="Input",
-        )
-        buildings.filter.list = ["Polygon"]
-
-        similar_features = arcpy.Parameter(
-            displayName="Similar Embedding Features",
-            name="in_similar_features",
-            datatype="GPFeatureLayer",
-            parameterType="Required",
-            direction="Input",
-        )
-        similar_features.filter.list = ["Polygon"]
-
-        output_features = arcpy.Parameter(
-            displayName="Output Classified Buildings",
-            name="out_buildings",
-            datatype="DEFeatureClass",
-            parameterType="Required",
-            direction="Output",
-        )
-
-        moderate_coverage_threshold = arcpy.Parameter(
-            displayName="Moderate Damage Minimum Coverage (%)",
-            name="moderate_coverage_threshold",
-            datatype="GPDouble",
-            parameterType="Optional",
-            direction="Input",
-        )
-        moderate_coverage_threshold.value = 20.0
-
-        high_coverage_threshold = arcpy.Parameter(
-            displayName="High Damage Minimum Coverage (%)",
-            name="high_coverage_threshold",
-            datatype="GPDouble",
-            parameterType="Optional",
-            direction="Input",
-        )
-        high_coverage_threshold.value = 50.0
-
-        match_option = arcpy.Parameter(
-            displayName="Spatial Match Option",
-            name="match_option",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input",
-        )
-        match_option.filter.type = "ValueList"
-        match_option.filter.list = ["INTERSECT"]
-        match_option.value = "INTERSECT"
-
-        search_radius = arcpy.Parameter(
-            displayName="Search Radius",
-            name="search_radius",
-            datatype="GPLinearUnit",
-            parameterType="Optional",
-            direction="Input",
-        )
-        search_radius.enabled = False
-
-        return [
-            buildings,
-            similar_features,
-            output_features,
-            moderate_coverage_threshold,
-            high_coverage_threshold,
-            match_option,
-            search_radius,
-        ]
-
-    def updateParameters(self, parameters):
-        parameters[6].enabled = False
-        return
-
-    def updateMessages(self, parameters):
-        _validate_coverage_parameters(parameters[3], parameters[4])
-
-        if parameters[5].valueAsText != "INTERSECT":
-            parameters[5].setErrorMessage("Coverage classification requires INTERSECT.")
-        return
-
-    def execute(self, parameters, messages):
-        buildings = parameters[0].valueAsText
-        similar_features = parameters[1].valueAsText
-        output_features = parameters[2].valueAsText
-        moderate_coverage_threshold = float(parameters[3].value or 20.0)
-        high_coverage_threshold = float(parameters[4].value or 50.0)
-        match_option = parameters[5].valueAsText
-        search_radius = parameters[6].valueAsText or None
-
-        _run_damage_classification(
-            buildings,
-            similar_features,
-            output_features,
-            moderate_coverage_threshold,
-            high_coverage_threshold,
-            match_option,
-            search_radius,
-            messages,
-        )
-        parameters[2].value = output_features
 
 
 def _run_damage_classification(
