@@ -8,10 +8,24 @@ import urllib.request
 import arcpy
 
 
-TOOL_VERSION = "4.2.1"
+TOOL_VERSION = "4.3.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
+EMBEDDING_MODELS = {
+    "EO-DINO (Default; Multisensor/RGB)": {
+        "item_id": EO_DINO_ITEM_ID,
+        "file_name": "EO-DINO.dlpk",
+    },
+    "DINOv2 (RGB)": {
+        "item_id": "17cae00c93194903a4bcb7853ab51b21",
+        "file_name": "DINOv2.dlpk",
+    },
+    "DINOv3 (RGB)": {
+        "item_id": "fbb8448003dc43aa8b69b46776606dd6",
+        "file_name": "DINOv3.dlpk",
+    },
+}
 WAYBACK_CATALOG_URL = (
     "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json"
 )
@@ -96,24 +110,25 @@ class AutomatedDamageAssessment(object):
     DETECTION_CELL_SIZE = 8
     POST_IMAGE = 9
     SAMPLE_POINTS = 10
-    EMBEDDING_MODEL = 11
-    GPU_ID = 12
-    BATCH_SIZE = 13
-    GRID_SIZE = 14
-    SIMILARITY_THRESHOLD = 15
-    OUT_CLASSIFIED = 16
-    MODERATE_THRESHOLD = 17
-    HIGH_THRESHOLD = 18
-    OUT_TARGET = 19
-    OUT_EMBEDDINGS = 20
-    OUT_SIMILAR = 21
-    KEEP_INTERMEDIATE = 22
+    ONLINE_EMBEDDING_MODEL = 11
+    EMBEDDING_MODEL = 12
+    GPU_ID = 13
+    BATCH_SIZE = 14
+    GRID_SIZE = 15
+    SIMILARITY_THRESHOLD = 16
+    OUT_CLASSIFIED = 17
+    MODERATE_THRESHOLD = 18
+    HIGH_THRESHOLD = 19
+    OUT_TARGET = 20
+    OUT_EMBEDDINGS = 21
+    OUT_SIMILAR = 22
+    KEEP_INTERMEDIATE = 23
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
         self.description = (
             "Extracts target features from pre-event imagery when needed, generates "
-            "EO-DINO embeddings from post-event imagery, finds areas similar to "
+            "deep-learning embeddings from post-event imagery, finds areas similar to "
             "user-marked damage examples, and classifies target features by overlap."
         )
         self.canRunInBackground = False
@@ -228,7 +243,7 @@ class AutomatedDamageAssessment(object):
         post_image.category = "3. Post-Event Similarity"
 
         sample_points = arcpy.Parameter(
-            displayName="Damage Example Points (6-20)",
+            displayName="Damage Example Points (Minimum 6)",
             name="in_damage_sample_points",
             datatype="GPFeatureLayer",
             parameterType="Required",
@@ -237,8 +252,20 @@ class AutomatedDamageAssessment(object):
         sample_points.filter.list = ["Point", "Multipoint"]
         sample_points.category = "3. Post-Event Similarity"
 
+        online_embedding_model = arcpy.Parameter(
+            displayName="ArcGIS Online Embedding Model",
+            name="online_embedding_model",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+        )
+        online_embedding_model.filter.type = "ValueList"
+        online_embedding_model.filter.list = list(EMBEDDING_MODELS)
+        online_embedding_model.value = next(iter(EMBEDDING_MODELS))
+        online_embedding_model.category = "3. Post-Event Similarity"
+
         embedding_model = arcpy.Parameter(
-            displayName="Custom Embedding Model (.dlpk, Optional; Default: Living Atlas EO-DINO)",
+            displayName="Custom Embedding Model (.dlpk, Optional Override)",
             name="in_embedding_model",
             datatype="DEFile",
             parameterType="Optional",
@@ -364,6 +391,7 @@ class AutomatedDamageAssessment(object):
             detection_cell_size,
             post_image,
             sample_points,
+            online_embedding_model,
             embedding_model,
             gpu_id,
             batch_size,
@@ -454,9 +482,9 @@ class AutomatedDamageAssessment(object):
                 sample_count = int(arcpy.management.GetCount(sample_points)[0])
             except Exception:
                 sample_count = None
-            if sample_count is not None and not 6 <= sample_count <= 20:
+            if sample_count is not None and sample_count < 6:
                 parameters[self.SAMPLE_POINTS].setErrorMessage(
-                    "Provide 6-20 damage example point features; "
+                    "Provide at least 6 damage example point features; "
                     f"the selected layer contains {sample_count}."
                 )
 
@@ -482,6 +510,7 @@ class AutomatedDamageAssessment(object):
         custom_prompt = parameters[self.CUSTOM_PROMPT].valueAsText
         post_image = _resolve_active_map_raster_layer(parameters[self.POST_IMAGE].valueAsText)
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
+        online_embedding_model = parameters[self.ONLINE_EMBEDDING_MODEL].valueAsText
         embedding_model = parameters[self.EMBEDDING_MODEL].valueAsText
         gpu_id = int(parameters[self.GPU_ID].value or 0)
         batch_size = int(parameters[self.BATCH_SIZE].value or 16)
@@ -576,10 +605,11 @@ class AutomatedDamageAssessment(object):
             )
             grid_source = "user supplied" if requested_grid_size else "Auto recommendation"
             messages.addMessage(f"Embedding grid size: {grid_size} ({grid_source})")
+            selected_model = EMBEDDING_MODELS[online_embedding_model]
             embedding_model = _resolve_model(
                 embedding_model,
-                EO_DINO_ITEM_ID,
-                "EO-DINO.dlpk",
+                selected_model["item_id"],
+                selected_model["file_name"],
                 messages,
             )
 
@@ -874,14 +904,14 @@ def _resolve_model(local_path, item_id, file_name, messages):
     model_path = os.path.join(cache_folder, file_name)
     if os.path.isfile(model_path) and os.path.getsize(model_path) > 0:
         messages.addMessage(
-            f"Using default Living Atlas model {item_id} from cache: {model_path}"
+            f"Using ArcGIS Online model {item_id} from cache: {model_path}"
         )
         return model_path
 
     partial_path = model_path + ".part"
     download_url = PORTAL_ITEM_URL.format(item_id=item_id) + "/data"
     messages.addMessage(
-        f"Downloading default Living Atlas model {item_id} ({file_name}). "
+        f"Downloading ArcGIS Online model {item_id} ({file_name}). "
         "This one-time download may take several minutes..."
     )
     try:
@@ -1073,9 +1103,9 @@ def _select_damage_queries(
             target_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
         )
         selected_count = int(arcpy.management.GetCount(target_layer)[0])
-        if not 6 <= selected_count <= 20:
+        if selected_count < 6:
             raise arcpy.ExecuteError(
-                "Damage example points must intersect 6-20 unique target features; "
+                "Damage example points must intersect at least 6 unique target features; "
                 f"{selected_count} unique feature(s) were selected."
             )
         arcpy.management.CopyFeatures(target_layer, query_features)
@@ -1092,9 +1122,9 @@ def _create_road_damage_queries(
     target_features, sample_points, scratch_workspace, messages
 ):
     sample_count = int(arcpy.management.GetCount(sample_points)[0])
-    if not 6 <= sample_count <= 20:
+    if sample_count < 6:
         raise arcpy.ExecuteError(
-            "Road damage examples require 6-20 point features; "
+            "Road damage examples require at least 6 point features; "
             f"{sample_count} point feature(s) were provided."
         )
 

@@ -10,17 +10,19 @@ The standalone **Classify Building Damage from Similar Embeddings** tool remains
 
 1. Use supplied target polygons, or extract targets from pre-event imagery with SAM3.
 2. Run nonmaximum suppression on SAM3 results and regularize building footprints with area-scaled tolerances, including finer tolerances for small buildings.
-3. Build query regions from 6-20 damage example points. For roads, points intersecting or within 10 meters of an inferred road pass a proximity QA check and create local 10-meter-radius query regions; farther points are ignored and reported. Other feature types require the points to identify 6-20 unique targets.
-4. Generate EO-DINO embeddings from post-event imagery only.
+3. Build query regions from at least 6 damage example points. For roads, points intersecting or within 10 meters of an inferred road pass a proximity QA check and create local 10-meter-radius query regions; farther points are ignored and reported. Other feature types require the points to identify at least 6 unique targets.
+4. Generate embeddings from post-event imagery using the selected ArcGIS Online model.
 5. Find embeddings similar to the selected damaged targets.
 6. Classify every target by the percentage covered by similar embedding polygons.
 
 When local model paths are empty, the tool downloads and caches these public packages automatically in the current user's ArcGIS Packages folder. There is no cache parameter to configure.
 
 - SAM3: ArcGIS item `37ef2e1ba0c042ce99501f56295ec0d4`
-- EO-DINO: ArcGIS item `93e8b9ad20734fe7a1641e46385535fc`
+- EO-DINO (default, multisensor/RGB): ArcGIS item `93e8b9ad20734fe7a1641e46385535fc`
+- DINOv2 (RGB): ArcGIS item `17cae00c93194903a4bcb7853ab51b21`
+- DINOv3 (RGB): ArcGIS item `fbb8448003dc43aa8b69b46776606dd6`
 
-These are the default extraction and embedding models. To use another compatible model, provide its local `.dlpk` in the corresponding **Custom Model** parameter; the supplied package overrides the default for that run.
+Choose an embedding package from the **ArcGIS Online Embedding Model** dropdown. The selected package is downloaded and cached automatically. To use another compatible model, provide its local `.dlpk` in the corresponding **Custom Model** parameter; the supplied package overrides the online selection for that run.
 
 ## Requirements
 
@@ -40,7 +42,7 @@ Feature-specific detection cell sizes are starting profiles and remain editable.
 
 Built-in extraction profiles are available for buildings, bridges, roads, debris, vehicles, trees, and utility poles. Choose **Custom** to supply another SAM3 text prompt.
 
-The tool validates the 6-20 damage-example feature count in the ArcGIS Pro dialog before execution. Road proximity to inferred features is checked later, after SAM3 extraction.
+The tool validates the minimum of 6 damage-example features in the ArcGIS Pro dialog before execution. Road proximity to inferred features is checked later, after SAM3 extraction.
 
 Damage classes are relative image evidence, not confirmation of structural damage. Validate moderate and high results against post-event imagery or field observations.
 
