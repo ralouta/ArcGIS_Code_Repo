@@ -1,15 +1,31 @@
+import glob
+import gc
+import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import statistics
+import subprocess
+import uuid
+from datetime import datetime, timezone
+import urllib.parse
 import urllib.request
 
 import arcpy
 
 
-TOOL_VERSION = "4.3.0"
+TOOL_VERSION = "5.2.2"
 WEB_MERCATOR_WKIDS = {3857, 102100}
+WEB_MERCATOR_ORIGIN = 20037508.342787
+WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
+MAX_WAYBACK_TILES = 4096
+WAYBACK_BLOCK_TILES = 16
+WAYBACK_CACHE_FORMAT_VERSION = 1
+IMAGE_SERVICE_TILE_SIZE = 4000
+EMBEDDING_CHUNK_PIXELS = 20000
+CACHE_FORMAT_VERSION = 1
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
 EMBEDDING_MODELS = {
@@ -28,6 +44,13 @@ EMBEDDING_MODELS = {
 }
 WAYBACK_CATALOG_URL = (
     "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json"
+)
+WAYBACK_MAP_SERVER_URL = (
+    "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer"
+)
+WORLD_IMAGERY_TILE_URL = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/"
+    "MapServer/tile/{level}/{row}/{col}"
 )
 PORTAL_ITEM_URL = "https://www.arcgis.com/sharing/rest/content/items/{item_id}"
 DEFAULT_MODEL_CACHE = os.path.join(
@@ -104,25 +127,27 @@ class AutomatedDamageAssessment(object):
     AOI = 2
     PRE_SOURCE = 3
     PRE_IMAGE = 4
-    WAYBACK = 5
+    PRE_WAYBACK = 5
     SAM_MODEL = 6
     CUSTOM_PROMPT = 7
     DETECTION_CELL_SIZE = 8
-    POST_IMAGE = 9
-    SAMPLE_POINTS = 10
-    ONLINE_EMBEDDING_MODEL = 11
-    EMBEDDING_MODEL = 12
-    GPU_ID = 13
-    BATCH_SIZE = 14
-    GRID_SIZE = 15
-    SIMILARITY_THRESHOLD = 16
-    OUT_CLASSIFIED = 17
-    MODERATE_THRESHOLD = 18
-    HIGH_THRESHOLD = 19
-    OUT_TARGET = 20
-    OUT_EMBEDDINGS = 21
-    OUT_SIMILAR = 22
-    KEEP_INTERMEDIATE = 23
+    POST_SOURCE = 9
+    POST_IMAGE = 10
+    POST_WAYBACK = 11
+    SAMPLE_POINTS = 12
+    ONLINE_EMBEDDING_MODEL = 13
+    EMBEDDING_MODEL = 14
+    GPU_ID = 15
+    BATCH_SIZE = 16
+    GRID_SIZE = 17
+    SIMILARITY_THRESHOLD = 18
+    OUT_CLASSIFIED = 19
+    MODERATE_THRESHOLD = 20
+    HIGH_THRESHOLD = 21
+    OUT_TARGET = 22
+    OUT_EMBEDDINGS = 23
+    OUT_SIMILAR = 24
+    KEEP_INTERMEDIATE = 25
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
@@ -134,6 +159,8 @@ class AutomatedDamageAssessment(object):
         self.canRunInBackground = False
         self.environments = ["extent"]
         self._last_feature_type = None
+        self._last_wayback_filter_key = None
+        self._filtered_wayback_releases = None
 
     def getParameterInfo(self):
         in_target = arcpy.Parameter(
@@ -191,16 +218,16 @@ class AutomatedDamageAssessment(object):
         pre_image.filter.list = _get_active_map_raster_layer_names()
         pre_image.category = "2. Pre-Event Feature Extraction"
 
-        wayback = arcpy.Parameter(
-            displayName="World Imagery Wayback Archive Release",
-            name="wayback_release",
+        pre_wayback = arcpy.Parameter(
+            displayName="Pre-Event World Imagery Wayback Release",
+            name="pre_event_wayback_release",
             datatype="GPString",
             parameterType="Optional",
             direction="Input",
         )
-        wayback.filter.type = "ValueList"
-        wayback.filter.list = [release[0] for release in _get_wayback_releases()]
-        wayback.category = "2. Pre-Event Feature Extraction"
+        pre_wayback.filter.type = "ValueList"
+        pre_wayback.filter.list = []
+        pre_wayback.category = "2. Pre-Event Feature Extraction"
 
         sam_model = arcpy.Parameter(
             displayName="Custom Extraction Model (.dlpk, Optional; Default: Living Atlas SAM3)",
@@ -231,16 +258,43 @@ class AutomatedDamageAssessment(object):
         detection_cell_size.value = FEATURE_PROFILES["Buildings"]["detection_cell_size"]
         detection_cell_size.category = "2. Pre-Event Feature Extraction"
 
+        post_source = arcpy.Parameter(
+            displayName="Post-Event Imagery Source",
+            name="post_event_source",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+        )
+        post_source.filter.type = "ValueList"
+        post_source.filter.list = [
+            "Input Imagery",
+            "Current World Imagery",
+            "World Imagery Wayback",
+        ]
+        post_source.value = "Input Imagery"
+        post_source.category = "3. Post-Event Similarity"
+
         post_image = arcpy.Parameter(
             displayName="Post-Event Imagery Layer (from Active Map)",
             name="in_post_event_imagery",
             datatype="GPString",
-            parameterType="Required",
+            parameterType="Optional",
             direction="Input",
         )
         post_image.filter.type = "ValueList"
         post_image.filter.list = _get_active_map_raster_layer_names()
         post_image.category = "3. Post-Event Similarity"
+
+        post_wayback = arcpy.Parameter(
+            displayName="Post-Event World Imagery Wayback Release",
+            name="post_event_wayback_release",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        post_wayback.filter.type = "ValueList"
+        post_wayback.filter.list = []
+        post_wayback.category = "3. Post-Event Similarity"
 
         sample_points = arcpy.Parameter(
             displayName="Damage Example Points (Minimum 6)",
@@ -291,7 +345,7 @@ class AutomatedDamageAssessment(object):
             parameterType="Optional",
             direction="Input",
         )
-        batch_size.value = 16
+        batch_size.value = 4
         batch_size.category = "3. Post-Event Similarity"
 
         grid_size = arcpy.Parameter(
@@ -385,11 +439,13 @@ class AutomatedDamageAssessment(object):
             aoi,
             pre_source,
             pre_image,
-            wayback,
+            pre_wayback,
             sam_model,
             custom_prompt,
             detection_cell_size,
+            post_source,
             post_image,
+            post_wayback,
             sample_points,
             online_embedding_model,
             embedding_model,
@@ -412,7 +468,7 @@ class AutomatedDamageAssessment(object):
             self.AOI,
             self.PRE_SOURCE,
             self.PRE_IMAGE,
-            self.WAYBACK,
+            self.PRE_WAYBACK,
             self.SAM_MODEL,
             self.CUSTOM_PROMPT,
             self.DETECTION_CELL_SIZE,
@@ -422,11 +478,73 @@ class AutomatedDamageAssessment(object):
         pre_source = parameters[self.PRE_SOURCE].valueAsText or "Input Imagery"
         if not has_target_features:
             parameters[self.PRE_IMAGE].enabled = pre_source == "Input Imagery"
-            parameters[self.WAYBACK].enabled = pre_source == "World Imagery Wayback"
+            parameters[self.PRE_WAYBACK].enabled = pre_source == "World Imagery Wayback"
+
+        post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
+        parameters[self.POST_IMAGE].enabled = post_source == "Input Imagery"
+        parameters[self.POST_WAYBACK].enabled = post_source == "World Imagery Wayback"
 
         raster_layer_names = _get_active_map_raster_layer_names()
         parameters[self.PRE_IMAGE].filter.list = raster_layer_names
         parameters[self.POST_IMAGE].filter.list = raster_layer_names
+
+        uses_wayback = (
+            (not has_target_features and pre_source == "World Imagery Wayback")
+            or post_source == "World Imagery Wayback"
+        )
+        if uses_wayback:
+            filter_extent = _get_wayback_filter_extent(
+                parameters[self.AOI].valueAsText,
+                parameters[self.IN_TARGET].valueAsText,
+            )
+            filter_key = _wayback_filter_key(filter_extent)
+            if filter_key != self._last_wayback_filter_key:
+                self._last_wayback_filter_key = filter_key
+                try:
+                    self._filtered_wayback_releases = (
+                        _get_wayback_releases_with_local_changes(*filter_extent)
+                        if filter_extent
+                        else None
+                    )
+                except Exception:
+                    self._filtered_wayback_releases = None
+            releases = (
+                self._filtered_wayback_releases
+                if self._filtered_wayback_releases is not None
+                else _get_wayback_releases()
+            )
+            parameters[self.PRE_WAYBACK].filter.list = [
+                release[0] for release in releases
+            ]
+            post_releases = releases
+            pre_wayback_release = parameters[self.PRE_WAYBACK].valueAsText
+            if (
+                not has_target_features
+                and pre_source == "World Imagery Wayback"
+                and pre_wayback_release
+            ):
+                selected_pre_release = next(
+                    (
+                        release
+                        for release in releases
+                        if release[0] == pre_wayback_release
+                    ),
+                    None,
+                )
+                if selected_pre_release:
+                    post_releases = [
+                        release
+                        for release in releases
+                        if release[1] > selected_pre_release[1]
+                    ]
+            post_wayback_choices = [release[0] for release in post_releases]
+            parameters[self.POST_WAYBACK].filter.list = post_wayback_choices
+            if (
+                parameters[self.POST_WAYBACK].valueAsText
+                and parameters[self.POST_WAYBACK].valueAsText
+                not in post_wayback_choices
+            ):
+                parameters[self.POST_WAYBACK].value = None
 
         feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
         parameters[self.CUSTOM_PROMPT].enabled = (
@@ -446,8 +564,10 @@ class AutomatedDamageAssessment(object):
                 parameters[self.PRE_IMAGE].setErrorMessage(
                     "Provide pre-event imagery or choose World Imagery Wayback."
                 )
-            if pre_source == "World Imagery Wayback" and not parameters[self.WAYBACK].valueAsText:
-                parameters[self.WAYBACK].setErrorMessage("Choose a Wayback release.")
+            if pre_source == "World Imagery Wayback" and not parameters[self.PRE_WAYBACK].valueAsText:
+                parameters[self.PRE_WAYBACK].setErrorMessage(
+                    "Choose a pre-event Wayback release."
+                )
             if (
                 parameters[self.FEATURE_TYPE].valueAsText == "Custom"
                 and not parameters[self.CUSTOM_PROMPT].valueAsText
@@ -455,6 +575,48 @@ class AutomatedDamageAssessment(object):
                 parameters[self.CUSTOM_PROMPT].setErrorMessage(
                     "Enter the object concept that SAM3 should segment."
                 )
+
+        post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
+        if post_source == "Input Imagery" and not parameters[self.POST_IMAGE].valueAsText:
+            parameters[self.POST_IMAGE].setErrorMessage(
+                "Provide post-event imagery or choose World Imagery Wayback."
+            )
+        if (
+            post_source == "World Imagery Wayback"
+            and not parameters[self.POST_WAYBACK].valueAsText
+        ):
+            pre_wayback_selected = (
+                not has_target_features
+                and pre_source == "World Imagery Wayback"
+                and parameters[self.PRE_WAYBACK].valueAsText
+            )
+            if pre_wayback_selected and not parameters[self.POST_WAYBACK].filter.list:
+                parameters[self.POST_WAYBACK].setErrorMessage(
+                    "No local Wayback release is available after the selected "
+                    "pre-event release. Choose an earlier pre-event release or use "
+                    "input post-event imagery."
+                )
+            else:
+                parameters[self.POST_WAYBACK].setErrorMessage(
+                    "Choose a post-event Wayback release."
+                )
+
+        if self._filtered_wayback_releases:
+            filter_message = (
+                f"Filtered to {len(self._filtered_wayback_releases)} Wayback "
+                "release(s) with local imagery changes at the analysis-area center."
+            )
+            if (
+                not has_target_features
+                and pre_source == "World Imagery Wayback"
+                and parameters[self.PRE_WAYBACK].valueAsText
+            ):
+                parameters[self.PRE_WAYBACK].setWarningMessage(filter_message)
+            if (
+                post_source == "World Imagery Wayback"
+                and parameters[self.POST_WAYBACK].valueAsText
+            ):
+                parameters[self.POST_WAYBACK].setWarningMessage(filter_message)
 
         if not has_target_features:
             _set_positive_error(
@@ -475,15 +637,26 @@ class AutomatedDamageAssessment(object):
         batch_size = parameters[self.BATCH_SIZE].value
         if batch_size is not None and int(batch_size) < 1:
             parameters[self.BATCH_SIZE].setErrorMessage("Batch size must be at least 1.")
+        elif batch_size is not None and int(batch_size) > 8:
+            parameters[self.BATCH_SIZE].setWarningMessage(
+                "Batch sizes above 8 can exhaust GPU memory; start with 4."
+            )
 
-        sample_points = parameters[self.SAMPLE_POINTS].valueAsText
-        if sample_points:
+        sample_parameter = parameters[self.SAMPLE_POINTS]
+        if sample_parameter.value:
             try:
-                sample_count = int(arcpy.management.GetCount(sample_points)[0])
+                sample_count = int(
+                    arcpy.management.GetCount(sample_parameter.value)[0]
+                )
             except Exception:
-                sample_count = None
+                try:
+                    sample_count = int(
+                        arcpy.management.GetCount(sample_parameter.valueAsText)[0]
+                    )
+                except Exception:
+                    sample_count = None
             if sample_count is not None and sample_count < 6:
-                parameters[self.SAMPLE_POINTS].setErrorMessage(
+                sample_parameter.setErrorMessage(
                     "Provide at least 6 damage example point features; "
                     f"the selected layer contains {sample_count}."
                 )
@@ -505,15 +678,20 @@ class AutomatedDamageAssessment(object):
         aoi = parameters[self.AOI].valueAsText
         pre_source = parameters[self.PRE_SOURCE].valueAsText or "Input Imagery"
         pre_image = _resolve_active_map_raster_layer(parameters[self.PRE_IMAGE].valueAsText)
-        wayback_release = parameters[self.WAYBACK].valueAsText
+        pre_wayback_release = parameters[self.PRE_WAYBACK].valueAsText
         sam_model = parameters[self.SAM_MODEL].valueAsText
         custom_prompt = parameters[self.CUSTOM_PROMPT].valueAsText
-        post_image = _resolve_active_map_raster_layer(parameters[self.POST_IMAGE].valueAsText)
+        post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
+        post_image = None
+        if post_source == "Input Imagery":
+            post_image = _resolve_active_map_raster_layer(
+                parameters[self.POST_IMAGE].valueAsText
+            )
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
         online_embedding_model = parameters[self.ONLINE_EMBEDDING_MODEL].valueAsText
         embedding_model = parameters[self.EMBEDDING_MODEL].valueAsText
         gpu_id = int(parameters[self.GPU_ID].value or 0)
-        batch_size = int(parameters[self.BATCH_SIZE].value or 16)
+        batch_size = int(parameters[self.BATCH_SIZE].value or 4)
         requested_grid_size = (
             int(parameters[self.GRID_SIZE].value)
             if parameters[self.GRID_SIZE].value is not None
@@ -534,14 +712,16 @@ class AutomatedDamageAssessment(object):
         scratch_workspace = arcpy.env.scratchGDB
         messages.addMessage(f"Automated Damage Assessment version {TOOL_VERSION}")
         messages.addMessage(f"Feature type: {feature_type}")
-        post_image = _ensure_web_mercator_raster(
-            post_image, "Post-event imagery", messages
-        )
+        _validate_gpu_memory(gpu_id, messages)
 
         target_features = in_target
         generated_target_features = None
         out_embeddings = None
         out_similar = None
+        generated_wayback_rasters = []
+        post_event_cache = None
+        pre_wayback_metadata = None
+        post_wayback_metadata = None
         if target_features:
             messages.addMessage("Using user-supplied target features; pre-event extraction is skipped.")
             analysis_extent, analysis_spatial_reference, extent_source = (
@@ -554,18 +734,35 @@ class AutomatedDamageAssessment(object):
             )
             source_imagery = pre_image
             if pre_source == "World Imagery Wayback":
-                source_imagery = _resolve_wayback_imagery(wayback_release, messages)
-            source_imagery = _ensure_web_mercator_raster(
-                source_imagery,
-                "Pre-event imagery",
-                messages,
-                assume_web_mercator=pre_source == "World Imagery Wayback",
-            )
-
-            analysis_extent, analysis_spatial_reference, extent_source = (
-                _resolve_analysis_extent(aoi, source_imagery, True)
-            )
-
+                analysis_extent, analysis_spatial_reference, extent_source = (
+                    _resolve_analysis_extent(aoi, None, True)
+                )
+            else:
+                source_imagery = _ensure_web_mercator_raster(
+                    source_imagery, "Pre-event imagery", messages
+                )
+                analysis_extent, analysis_spatial_reference, extent_source = (
+                    _resolve_analysis_extent(aoi, source_imagery, True)
+                )
+            if pre_source == "World Imagery Wayback":
+                pre_wayback_metadata = _validate_wayback_coverage(
+                    pre_wayback_release,
+                    analysis_extent,
+                    analysis_spatial_reference,
+                    "Pre-event",
+                    messages,
+                )
+                source_imagery = _materialize_wayback_imagery(
+                    pre_wayback_release,
+                    analysis_extent,
+                    analysis_spatial_reference,
+                    _wayback_cell_size(
+                        pre_wayback_metadata, detection_cell_size
+                    ),
+                    "PreEvent",
+                    messages,
+                )
+                generated_wayback_rasters.append(source_imagery)
             sam_model = _resolve_model(
                 sam_model,
                 SAM3_ITEM_ID,
@@ -589,7 +786,30 @@ class AutomatedDamageAssessment(object):
             )
             generated_target_features = target_features
 
+        (
+            post_image,
+            post_event_cache,
+            post_wayback_metadata,
+        ) = _resolve_post_event_imagery(
+            post_source,
+            post_image,
+            parameters[self.POST_WAYBACK].valueAsText,
+            analysis_extent,
+            analysis_spatial_reference,
+            messages,
+        )
+
         messages.addMessage(f"Analysis extent source: {extent_source}")
+        if (
+            pre_wayback_metadata
+            and post_wayback_metadata
+            and pre_wayback_metadata == post_wayback_metadata
+        ):
+            messages.addWarningMessage(
+                "The selected pre-event and post-event Wayback releases use the same "
+                "local imagery over the analysis area. Choose another release if you "
+                "need imagery from a different acquisition."
+            )
         parameters[self.OUT_TARGET].value = target_features
         query_features = _select_damage_queries(
             target_features,
@@ -598,6 +818,7 @@ class AutomatedDamageAssessment(object):
             scratch_workspace,
             messages,
         )
+        run_succeeded = False
 
         try:
             grid_size = requested_grid_size or _recommend_grid_size(
@@ -612,28 +833,37 @@ class AutomatedDamageAssessment(object):
                 selected_model["file_name"],
                 messages,
             )
-
+            output_spatial_reference = arcpy.Describe(target_features).spatialReference
+            if post_event_cache is None:
+                post_image, post_event_cache = _materialize_image_service_if_needed(
+                    post_image,
+                    analysis_extent,
+                    analysis_spatial_reference,
+                    embedding_model,
+                    grid_size,
+                    batch_size,
+                    output_spatial_reference,
+                    messages,
+                )
+            post_image = _ensure_web_mercator_raster(
+                post_image, "Post-event imagery", messages
+            )
             out_embeddings = arcpy.CreateUniqueName(
                 "Damage_PostEvent_Embeddings", output_workspace
             )
-            output_spatial_reference = arcpy.Describe(target_features).spatialReference
-            messages.addMessage("Generating embeddings from post-event imagery...")
-            with arcpy.EnvManager(
-                gpuId=gpu_id,
-                extent=analysis_extent,
-                processorType="GPU",
-                outputCoordinateSystem=output_spatial_reference,
-            ):
-                arcpy.geoai.GenerateEmbeddingsUsingAIModels(
-                    in_data=post_image,
-                    out_embeddings_feature_class=out_embeddings,
-                    in_model_definition_file=embedding_model,
-                    arguments=(
-                        f"batch_size {batch_size};data_src RGB;"
-                        "radiometric_offset_correction False;"
-                        f"grid_size {grid_size}"
-                    ),
-                )
+            _generate_embeddings(
+                post_image,
+                out_embeddings,
+                embedding_model,
+                batch_size,
+                grid_size,
+                gpu_id,
+                analysis_extent,
+                analysis_spatial_reference,
+                output_spatial_reference,
+                post_event_cache,
+                messages,
+            )
             parameters[self.OUT_EMBEDDINGS].value = out_embeddings
 
             out_similar = arcpy.CreateUniqueName(
@@ -659,21 +889,73 @@ class AutomatedDamageAssessment(object):
                 messages,
             )
             parameters[self.OUT_CLASSIFIED].value = out_classified
+            run_succeeded = True
         finally:
             if arcpy.Exists(query_features):
                 arcpy.management.Delete(query_features)
+            if post_event_cache and run_succeeded:
+                _delete_image_service_cache(post_event_cache["cache_root"])
+            elif post_event_cache:
+                messages.addWarningMessage(
+                    "Retained resumable processing cache: "
+                    f"{post_event_cache['cache_root']}"
+                )
             if not keep_intermediate:
                 messages.addMessage("Deleting generated intermediate data...")
                 for dataset in (
                     out_similar,
                     out_embeddings,
                     generated_target_features,
+                    *generated_wayback_rasters,
                 ):
                     if dataset and arcpy.Exists(dataset):
                         arcpy.management.Delete(dataset)
+                    tile_folder = f"{os.path.splitext(dataset)[0]}_tiles" if dataset else None
+                    if tile_folder and os.path.isdir(tile_folder):
+                        shutil.rmtree(tile_folder, ignore_errors=True)
                 parameters[self.OUT_TARGET].value = None
                 parameters[self.OUT_EMBEDDINGS].value = None
                 parameters[self.OUT_SIMILAR].value = None
+
+
+def _validate_gpu_memory(gpu_id, messages):
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--id={gpu_id}",
+                "--query-gpu=memory.free,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=10,
+        )
+        free_memory, total_memory = (
+            int(value.strip()) for value in result.stdout.splitlines()[0].split(",")
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        messages.addWarningMessage(
+            "Could not check GPU memory with nvidia-smi; deep-learning tools will "
+            f"perform their own GPU validation. Details: {error}"
+        )
+        return
+
+    messages.addMessage(
+        f"GPU {gpu_id} memory available: {free_memory:,} MiB of {total_memory:,} MiB."
+    )
+    if free_memory < 1024:
+        raise arcpy.ExecuteError(
+            f"GPU {gpu_id} has only {free_memory:,} MiB free. SAM3 cannot initialize "
+            "with less than 1,024 MiB available. Close GPU-heavy applications or "
+            "restart ArcGIS Pro, then run the tool again."
+        )
+    if free_memory < 6144:
+        messages.addWarningMessage(
+            f"GPU {gpu_id} has only {free_memory:,} MiB free. SAM3 may run out of "
+            "memory; close GPU-heavy applications and use batch size 4 or lower."
+        )
 
 
 def _set_positive_error(parameter, label):
@@ -699,8 +981,17 @@ def _resolve_analysis_extent(aoi, fallback_dataset, require_explicit_extent):
     environment_extent = _get_environment_extent()
     if environment_extent:
         spatial_reference = getattr(environment_extent, "spatialReference", None)
-        if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
+        if (
+            (not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown")
+            and fallback_dataset
+        ):
             spatial_reference = arcpy.Describe(fallback_dataset).spatialReference
+        if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
+            raise arcpy.ExecuteError(
+                "The Extent environment must have a defined coordinate system when "
+                "World Imagery Wayback is used. Use an AOI polygon or an extent from "
+                "a map layer with a defined coordinate system."
+            )
         return environment_extent, spatial_reference, "Extent environment"
 
     if require_explicit_extent:
@@ -791,12 +1082,914 @@ def _resolve_active_map_raster_layer(layer_name):
     )
 
 
-def _ensure_web_mercator_raster(
-    raster, label, messages, assume_web_mercator=False
+def _materialize_image_service_if_needed(
+    raster,
+    analysis_extent,
+    analysis_spatial_reference,
+    model,
+    grid_size,
+    batch_size,
+    output_spatial_reference,
+    messages,
 ):
-    if assume_web_mercator:
-        return raster
+    service_url = _image_service_url(raster)
+    if not service_url:
+        return raster, None
 
+    source_spatial_reference, cell_width, cell_height = (
+        _image_service_raster_properties(raster, service_url, messages)
+    )
+
+    source_extent = _project_extent(
+        analysis_extent,
+        analysis_spatial_reference,
+        source_spatial_reference,
+    )
+    column_count = math.ceil(source_extent.width / cell_width)
+    row_count = math.ceil(source_extent.height / cell_height)
+    if (
+        column_count <= IMAGE_SERVICE_TILE_SIZE
+        and row_count <= IMAGE_SERVICE_TILE_SIZE
+    ):
+        return raster, None
+
+    tile_columns = math.ceil(column_count / IMAGE_SERVICE_TILE_SIZE)
+    tile_rows = math.ceil(row_count / IMAGE_SERVICE_TILE_SIZE)
+    tile_count = tile_columns * tile_rows
+    if tile_count > MAX_WAYBACK_TILES:
+        raise arcpy.ExecuteError(
+            f"The post-event image service requires {tile_count:,} local tiles at "
+            "native resolution. Reduce the Extent environment before running the tool."
+        )
+
+    cache_root = _image_service_cache_root(
+        raster,
+        service_url,
+        source_extent,
+        source_spatial_reference,
+        cell_width,
+        cell_height,
+    )
+    tile_folder = os.path.join(cache_root, "tiles")
+    os.makedirs(tile_folder, exist_ok=True)
+    messages.addMessage(f"Resumable processing cache: {cache_root}")
+    messages.addMessage(
+        f"Post-event image service request is {column_count:,} by {row_count:,} "
+        f"pixels, above the {IMAGE_SERVICE_TILE_SIZE:,}-pixel safe request size."
+    )
+
+    try:
+        tile_span_x = IMAGE_SERVICE_TILE_SIZE * cell_width
+        tile_span_y = IMAGE_SERVICE_TILE_SIZE * cell_height
+        tile_records = []
+        for row in range(tile_rows):
+            tile_ymax = source_extent.YMax - row * tile_span_y
+            tile_ymin = max(source_extent.YMin, tile_ymax - tile_span_y)
+            for column in range(tile_columns):
+                tile_xmin = source_extent.XMin + column * tile_span_x
+                tile_xmax = min(source_extent.XMax, tile_xmin + tile_span_x)
+                tile_path = os.path.join(
+                    tile_folder, f"post_event_{row}_{column}.tif"
+                )
+                tile_records.append(
+                    (
+                        tile_path,
+                        tile_xmin,
+                        tile_ymin,
+                        tile_xmax,
+                        tile_ymax,
+                    )
+                )
+
+        cache = {
+            "cache_root": cache_root,
+            "tile_records": tuple(tile_records),
+            "source_extent": source_extent,
+            "spatial_reference": source_spatial_reference,
+            "cell_width": cell_width,
+            "cell_height": cell_height,
+        }
+        chunk_count = len(
+            _embedding_chunk_extents(
+                cache,
+                analysis_extent,
+                analysis_spatial_reference,
+                grid_size,
+            )
+        )
+        chunk_workspace = _embedding_checkpoint_workspace(
+            cache_root,
+            model,
+            grid_size,
+            batch_size,
+            output_spatial_reference,
+        )
+        messages.addMessage(
+            f"Checking {chunk_count:,} embedding completion markers..."
+        )
+        if all(
+            _valid_embedding_checkpoint(
+                os.path.join(
+                    chunk_workspace, f"EmbeddingChunk_{index:04d}"
+                )
+            )
+            for index in range(1, chunk_count + 1)
+        ):
+            messages.addMessage(
+                f"Found all {chunk_count:,} completed embedding checkpoints; "
+                "skipping image-tile cache validation."
+            )
+            cache["embedding_checkpoints_prevalidated"] = True
+            return raster, cache
+
+        messages.addMessage(
+            f"Caching {tile_count:,} tiles locally at native resolution..."
+        )
+        reused_tile_count = 0
+        for tile_path, tile_xmin, tile_ymin, tile_xmax, tile_ymax in tile_records:
+            if _valid_cached_raster(tile_path):
+                reused_tile_count += 1
+                continue
+            _delete_cached_raster(tile_path)
+            _delete_checkpoint_marker(tile_path)
+            _export_image_service_tile(
+                raster,
+                tile_path,
+                arcpy.Extent(
+                    tile_xmin, tile_ymin, tile_xmax, tile_ymax
+                ),
+                source_spatial_reference,
+                cell_width,
+                messages,
+            )
+            _write_checkpoint_marker(tile_path)
+
+        if reused_tile_count:
+            messages.addMessage(
+                f"Resumed image-service cache with {reused_tile_count:,} of "
+                f"{tile_count:,} tiles already complete."
+            )
+        messages.addMessage(
+            "Cached image-service tiles are ready for extent-based processing."
+        )
+        return raster, cache
+    except Exception as error:
+        raise arcpy.ExecuteError(
+            "Could not complete the resumable post-event image cache. Run the tool "
+            f"again to continue from {cache_root}. Details: {error}"
+        )
+
+
+def _export_image_service_tile(
+    raster,
+    tile_path,
+    tile_extent,
+    spatial_reference,
+    cell_size,
+    messages,
+):
+    last_error = None
+    for attempt in range(1, 4):
+        temporary_path = (
+            f"{os.path.splitext(tile_path)[0]}.part_{uuid.uuid4().hex}.tif"
+        )
+        _delete_cached_raster(temporary_path)
+        try:
+            with arcpy.EnvManager(
+                extent=tile_extent,
+                outputCoordinateSystem=spatial_reference,
+                cellSize=cell_size,
+                compression="LZW",
+            ):
+                arcpy.management.Clip(
+                    in_raster=raster,
+                    rectangle=(
+                        f"{tile_extent.XMin} {tile_extent.YMin} "
+                        f"{tile_extent.XMax} {tile_extent.YMax}"
+                    ),
+                    out_raster=temporary_path,
+                    in_template_dataset="#",
+                    nodata_value="#",
+                    clipping_geometry="NONE",
+                    maintain_clipping_extent="NO_MAINTAIN_EXTENT",
+                )
+            if not _valid_raster_output(temporary_path):
+                raise arcpy.ExecuteError(
+                    "The temporary tile is incomplete or unreadable."
+                )
+
+            _delete_cached_raster(tile_path)
+            os.replace(temporary_path, tile_path)
+            if not _valid_raster_output(tile_path):
+                raise arcpy.ExecuteError(
+                    "The promoted tile is incomplete or unreadable."
+                )
+            _delete_cached_raster(temporary_path)
+            return
+        except Exception as error:
+            last_error = error
+            _delete_cached_raster(temporary_path)
+            if not _valid_raster_output(tile_path):
+                _delete_cached_raster(tile_path)
+            if attempt < 3:
+                messages.addWarningMessage(
+                    f"Tile export attempt {attempt} failed for "
+                    f"{os.path.basename(tile_path)}; retrying with a clean "
+                    f"temporary raster. Details: {error}"
+                )
+
+    raise arcpy.ExecuteError(
+        f"Tile export failed after 3 attempts: {tile_path}. Details: {last_error}"
+    )
+
+
+def _image_service_cache_root(
+    raster,
+    service_url,
+    source_extent,
+    spatial_reference,
+    cell_width,
+    cell_height,
+):
+    wkid = (
+        getattr(spatial_reference, "factoryCode", 0)
+        or getattr(spatial_reference, "latestWkid", 0)
+        or spatial_reference.name
+    )
+    cache_key = json.dumps(
+        {
+            "cache_format": CACHE_FORMAT_VERSION,
+            "service": service_url.lower(),
+            "layer": _image_service_layer_signature(raster),
+            "extent": [
+                round(source_extent.XMin, 6),
+                round(source_extent.YMin, 6),
+                round(source_extent.XMax, 6),
+                round(source_extent.YMax, 6),
+            ],
+            "wkid": wkid,
+            "cell_size": [round(cell_width, 12), round(cell_height, 12)],
+        },
+        sort_keys=True,
+    )
+    cache_id = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(
+        arcpy.env.scratchFolder, f"DamageAssessment_{cache_id}"
+    )
+
+
+def _image_service_layer_signature(raster):
+    signature = {
+        "name": getattr(raster, "name", None),
+        "data_source": getattr(raster, "dataSource", None),
+        "definition_query": getattr(raster, "definitionQuery", None),
+    }
+    try:
+        signature["connection_properties"] = raster.connectionProperties
+    except Exception:
+        pass
+    return json.dumps(signature, sort_keys=True, default=str)
+
+
+def _valid_cached_raster(raster_path):
+    if (
+        not os.path.isfile(_checkpoint_marker(raster_path))
+        or not _valid_raster_output(raster_path)
+    ):
+        return False
+
+    return True
+
+
+def _valid_raster_output(raster_path):
+    if not arcpy.Exists(raster_path):
+        return False
+    try:
+        column_count = int(
+            float(
+                arcpy.management.GetRasterProperties(
+                    raster_path, "COLUMNCOUNT"
+                ).getOutput(0)
+            )
+        )
+        row_count = int(
+            float(
+                arcpy.management.GetRasterProperties(
+                    raster_path, "ROWCOUNT"
+                ).getOutput(0)
+            )
+        )
+        if column_count <= 0 or row_count <= 0:
+            return False
+        cached_raster = arcpy.Raster(raster_path)
+        sample = arcpy.RasterToNumPyArray(cached_raster, ncols=1, nrows=1)
+        return sample.size > 0
+    except Exception:
+        return False
+
+
+def _checkpoint_marker(dataset_path):
+    parent_workspace = os.path.dirname(dataset_path)
+    if parent_workspace.lower().endswith(".gdb"):
+        marker_folder = os.path.join(
+            os.path.dirname(parent_workspace),
+            f"{os.path.basename(parent_workspace)}_checkpoints",
+        )
+    else:
+        marker_folder = os.path.join(parent_workspace, ".checkpoints")
+    return os.path.join(
+        marker_folder, f"{os.path.basename(dataset_path)}.complete"
+    )
+
+
+def _write_checkpoint_marker(dataset_path):
+    marker_path = _checkpoint_marker(dataset_path)
+    os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+    with open(marker_path, "w", encoding="ascii") as marker_file:
+        marker_file.write("complete\n")
+
+
+def _delete_checkpoint_marker(dataset_path):
+    marker_path = _checkpoint_marker(dataset_path)
+    if os.path.isfile(marker_path):
+        os.remove(marker_path)
+
+
+def _delete_image_service_cache(cache_root):
+    try:
+        arcpy.management.ClearWorkspaceCache()
+    except Exception:
+        pass
+    shutil.rmtree(cache_root, ignore_errors=True)
+
+
+def _generate_embeddings(
+    raster,
+    output_embeddings,
+    model,
+    batch_size,
+    grid_size,
+    gpu_id,
+    analysis_extent,
+    analysis_spatial_reference,
+    output_spatial_reference,
+    image_service_cache,
+    messages,
+):
+    use_chunks = bool(image_service_cache)
+    checkpoints_prevalidated = bool(
+        image_service_cache
+        and image_service_cache.get("embedding_checkpoints_prevalidated")
+    )
+    chunk_extents = (
+        _embedding_chunk_extents(
+            image_service_cache,
+            analysis_extent,
+            analysis_spatial_reference,
+            grid_size,
+        )
+        if use_chunks
+        else [analysis_extent]
+    )
+    chunk_count = len(chunk_extents)
+    if not checkpoints_prevalidated:
+        if chunk_count > 1:
+            messages.addMessage(
+                f"Generating embeddings in {chunk_count:,} bounded spatial chunks "
+                "to avoid long-running raster worker timeouts."
+            )
+        else:
+            messages.addMessage("Generating embeddings from post-event imagery...")
+
+    chunk_workspace = None
+    chunk_raster_folder = None
+    if use_chunks:
+        chunk_workspace = _embedding_checkpoint_workspace(
+            image_service_cache["cache_root"],
+            model,
+            grid_size,
+            batch_size,
+            output_spatial_reference,
+        )
+        if not arcpy.Exists(chunk_workspace):
+            arcpy.management.CreateFileGDB(
+                os.path.dirname(chunk_workspace),
+                os.path.basename(chunk_workspace),
+            )
+        chunk_raster_folder = os.path.join(
+            image_service_cache["cache_root"],
+            f"{os.path.splitext(os.path.basename(chunk_workspace))[0]}_rasters",
+        )
+        os.makedirs(chunk_raster_folder, exist_ok=True)
+
+    chunk_outputs = []
+    try:
+        for index, chunk_extent in enumerate(chunk_extents, start=1):
+            chunk_output = output_embeddings
+            chunk_raster = None
+            if use_chunks:
+                chunk_output = os.path.join(
+                    chunk_workspace, f"EmbeddingChunk_{index:04d}"
+                )
+                chunk_outputs.append(chunk_output)
+                chunk_raster = os.path.join(
+                    chunk_raster_folder, f"EmbeddingInput_{index:04d}.tif"
+                )
+                if checkpoints_prevalidated:
+                    continue
+                if _valid_embedding_checkpoint(chunk_output):
+                    messages.addMessage(
+                        f"Reusing completed embedding chunk {index:,} of "
+                        f"{chunk_count:,}."
+                    )
+                    _delete_cached_raster(chunk_raster)
+                    continue
+                if arcpy.Exists(chunk_output):
+                    arcpy.management.Delete(chunk_output)
+                _delete_checkpoint_marker(chunk_output)
+            if chunk_count > 1:
+                messages.addMessage(
+                    f"Generating embedding chunk {index:,} of {chunk_count:,}..."
+                )
+
+            embedding_input = raster
+            environment = {
+                "gpuId": gpu_id,
+                "extent": chunk_extent,
+                "processorType": "GPU",
+                "outputCoordinateSystem": output_spatial_reference,
+                "recycleProcessingWorkers": 1,
+            }
+            if use_chunks:
+                embedding_input = _prepare_embedding_chunk_raster(
+                    chunk_raster,
+                    chunk_extent,
+                    image_service_cache,
+                )
+                environment["cellSize"] = max(
+                    image_service_cache["cell_width"],
+                    image_service_cache["cell_height"],
+                )
+                environment["snapRaster"] = embedding_input
+
+            try:
+                with arcpy.EnvManager(**environment):
+                    arcpy.geoai.GenerateEmbeddingsUsingAIModels(
+                        in_data=embedding_input,
+                        out_embeddings_feature_class=chunk_output,
+                        in_model_definition_file=model,
+                        arguments=(
+                            f"batch_size {batch_size};data_src RGB;"
+                            "radiometric_offset_correction False;"
+                            f"grid_size {grid_size}"
+                        ),
+                    )
+            finally:
+                _release_gpu_memory()
+                if use_chunks:
+                    del embedding_input
+                    _delete_cached_raster(chunk_raster)
+            if use_chunks:
+                if not _valid_embedding_output(chunk_output):
+                    raise arcpy.ExecuteError(
+                        "Embedding generation did not create a valid checkpoint "
+                        f"for chunk {index:,}."
+                    )
+                _write_checkpoint_marker(chunk_output)
+
+        if use_chunks:
+            if arcpy.Exists(output_embeddings):
+                arcpy.management.Delete(output_embeddings)
+            with arcpy.EnvManager(workspace=chunk_workspace):
+                for staged_output in arcpy.ListFeatureClasses("EmbeddingMerge_*"):
+                    staged_path = os.path.join(chunk_workspace, staged_output)
+                    arcpy.management.Delete(staged_path)
+                    _delete_checkpoint_marker(staged_path)
+            messages.addMessage(
+                f"Assembling {len(chunk_outputs):,} completed embedding chunks "
+                "with one direct merge..."
+            )
+            _merge_embedding_chunks(
+                chunk_outputs,
+                output_embeddings,
+            )
+    except Exception:
+        if arcpy.Exists(output_embeddings):
+            arcpy.management.Delete(output_embeddings)
+        raise
+
+
+def _merge_embedding_chunks(
+    chunk_outputs,
+    output_embeddings,
+):
+    arcpy.management.Merge(
+        inputs=";".join(chunk_outputs),
+        output=output_embeddings,
+        field_mappings=None,
+        add_source="NO_SOURCE_INFO",
+        field_match_mode="AUTOMATIC",
+    )
+    if not _valid_embedding_output(output_embeddings):
+        raise arcpy.ExecuteError(
+            "The direct embedding merge did not create a valid feature class."
+        )
+
+
+def _embedding_checkpoint_workspace(
+    cache_root,
+    model,
+    grid_size,
+    batch_size,
+    output_spatial_reference,
+):
+    model_size = os.path.getsize(model) if os.path.isfile(model) else None
+    wkid = (
+        getattr(output_spatial_reference, "factoryCode", 0)
+        or getattr(output_spatial_reference, "latestWkid", 0)
+        or output_spatial_reference.name
+    )
+    checkpoint_properties = {
+        "model": os.path.abspath(model).lower(),
+        "model_size": model_size,
+        "grid_size": int(grid_size),
+        "output_wkid": wkid,
+        "chunk_pixels": EMBEDDING_CHUNK_PIXELS,
+        "input_strategy": "per_chunk_raster_v1",
+    }
+    checkpoint_workspace = _hashed_embedding_workspace(
+        cache_root, checkpoint_properties
+    )
+    if arcpy.Exists(checkpoint_workspace):
+        return checkpoint_workspace
+
+    legacy_batch_sizes = [int(batch_size)] + [
+        value for value in range(1, 129) if value != int(batch_size)
+    ]
+    for legacy_batch_size in legacy_batch_sizes:
+        legacy_properties = dict(checkpoint_properties)
+        legacy_properties["batch_size"] = legacy_batch_size
+        legacy_workspace = _hashed_embedding_workspace(
+            cache_root, legacy_properties
+        )
+        if arcpy.Exists(legacy_workspace):
+            return legacy_workspace
+    return checkpoint_workspace
+
+
+def _hashed_embedding_workspace(cache_root, checkpoint_properties):
+    checkpoint_key = json.dumps(checkpoint_properties, sort_keys=True)
+    checkpoint_id = hashlib.sha256(
+        checkpoint_key.encode("utf-8")
+    ).hexdigest()[:12]
+    return os.path.join(cache_root, f"embeddings_{checkpoint_id}.gdb")
+
+
+def _release_gpu_memory():
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+    try:
+        arcpy.management.ClearWorkspaceCache()
+    except Exception:
+        pass
+
+
+def _valid_embedding_checkpoint(feature_class):
+    if not os.path.isfile(_checkpoint_marker(feature_class)):
+        return False
+    if not arcpy.Exists(feature_class):
+        return False
+    try:
+        return any(
+            field.type.upper() == "BLOB"
+            for field in arcpy.ListFields(feature_class)
+        )
+    except Exception:
+        return False
+
+
+def _valid_embedding_output(feature_class):
+    if not arcpy.Exists(feature_class):
+        return False
+    try:
+        has_embeddings = any(
+            field.type.upper() == "BLOB" for field in arcpy.ListFields(feature_class)
+        )
+        return has_embeddings and int(arcpy.management.GetCount(feature_class)[0]) > 0
+    except Exception:
+        return False
+
+
+def _embedding_chunk_extents(
+    image_service_cache,
+    analysis_extent,
+    analysis_spatial_reference,
+    grid_size,
+):
+    raster_spatial_reference = image_service_cache["spatial_reference"]
+    cell_width = image_service_cache["cell_width"]
+    cell_height = image_service_cache["cell_height"]
+    projected_extent = _project_extent(
+        analysis_extent,
+        analysis_spatial_reference,
+        raster_spatial_reference,
+    )
+    raster_extent = image_service_cache["source_extent"]
+    xmin = max(projected_extent.XMin, raster_extent.XMin)
+    ymin = max(projected_extent.YMin, raster_extent.YMin)
+    xmax = min(projected_extent.XMax, raster_extent.XMax)
+    ymax = min(projected_extent.YMax, raster_extent.YMax)
+    if xmin >= xmax or ymin >= ymax:
+        raise arcpy.ExecuteError(
+            "The embedding analysis extent does not overlap the cached post-event imagery."
+        )
+
+    embedding_stride_pixels = max(16, 16 * int(grid_size))
+    chunk_width_pixels = max(
+        embedding_stride_pixels,
+        (EMBEDDING_CHUNK_PIXELS // embedding_stride_pixels)
+        * embedding_stride_pixels,
+    )
+    chunk_width = chunk_width_pixels * cell_width
+    chunk_height = chunk_width_pixels * cell_height
+    column_count = math.ceil((xmax - xmin) / chunk_width)
+    row_count = math.ceil((ymax - ymin) / chunk_height)
+    chunk_extents = []
+    for row in range(row_count):
+        chunk_ymax = ymax - row * chunk_height
+        chunk_ymin = max(ymin, chunk_ymax - chunk_height)
+        for column in range(column_count):
+            chunk_xmin = xmin + column * chunk_width
+            chunk_xmax = min(xmax, chunk_xmin + chunk_width)
+            chunk_extents.append(
+                _spatial_extent(
+                    chunk_xmin,
+                    chunk_ymin,
+                    chunk_xmax,
+                    chunk_ymax,
+                    raster_spatial_reference,
+                )
+            )
+    return chunk_extents
+
+
+def _prepare_embedding_chunk_raster(
+    chunk_raster,
+    chunk_extent,
+    image_service_cache,
+):
+    if _valid_raster_output(chunk_raster):
+        return chunk_raster
+    _delete_cached_raster(chunk_raster)
+
+    tile_paths = [
+        tile_path
+        for tile_path, xmin, ymin, xmax, ymax in image_service_cache["tile_records"]
+        if not (
+            xmax <= chunk_extent.XMin
+            or xmin >= chunk_extent.XMax
+            or ymax <= chunk_extent.YMin
+            or ymin >= chunk_extent.YMax
+        )
+    ]
+    if not tile_paths:
+        raise arcpy.ExecuteError(
+            "No cached image-service tiles intersect an embedding chunk."
+        )
+
+    first_raster = arcpy.Raster(tile_paths[0])
+    band_count = int(
+        float(
+            arcpy.management.GetRasterProperties(
+                tile_paths[0], "BANDCOUNT"
+            ).getOutput(0)
+        )
+    )
+    with arcpy.EnvManager(
+        extent=chunk_extent,
+        outputCoordinateSystem=image_service_cache["spatial_reference"],
+        cellSize=image_service_cache["cell_width"],
+        snapRaster=tile_paths[0],
+        compression="LZW",
+    ):
+        arcpy.management.MosaicToNewRaster(
+            input_rasters=tile_paths,
+            output_location=os.path.dirname(chunk_raster),
+            raster_dataset_name_with_extension=os.path.basename(chunk_raster),
+            coordinate_system_for_the_raster=image_service_cache[
+                "spatial_reference"
+            ],
+            pixel_type=_mosaic_pixel_type(first_raster.pixelType),
+            cellsize=image_service_cache["cell_width"],
+            number_of_bands=band_count,
+            mosaic_method="FIRST",
+            mosaic_colormap_mode="FIRST",
+        )
+    if not _valid_raster_output(chunk_raster):
+        _delete_cached_raster(chunk_raster)
+        raise arcpy.ExecuteError(
+            "Could not create a readable local raster for an embedding chunk."
+        )
+    return chunk_raster
+
+
+def _mosaic_pixel_type(pixel_type):
+    return {
+        "U1": "1_BIT",
+        "U2": "2_BIT",
+        "U4": "4_BIT",
+        "U8": "8_BIT_UNSIGNED",
+        "S8": "8_BIT_SIGNED",
+        "U16": "16_BIT_UNSIGNED",
+        "S16": "16_BIT_SIGNED",
+        "U32": "32_BIT_UNSIGNED",
+        "S32": "32_BIT_SIGNED",
+        "F32": "32_BIT_FLOAT",
+        "F64": "64_BIT",
+    }.get(str(pixel_type).upper(), "8_BIT_UNSIGNED")
+
+
+def _delete_cached_raster(raster_path):
+    if not raster_path:
+        return
+    try:
+        arcpy.management.ClearWorkspaceCache()
+    except Exception:
+        pass
+    try:
+        if arcpy.Exists(raster_path):
+            arcpy.management.Delete(raster_path)
+    except Exception:
+        pass
+    raster_root = os.path.splitext(raster_path)[0]
+    candidates = set(glob.glob(f"{raster_path}*"))
+    candidates.update(glob.glob(f"{raster_root}.tfw"))
+    for candidate in candidates:
+        try:
+            if os.path.isfile(candidate):
+                os.remove(candidate)
+        except OSError:
+            pass
+
+
+def _spatial_extent(xmin, ymin, xmax, ymax, spatial_reference):
+    return arcpy.Polygon(
+        arcpy.Array(
+            [
+                arcpy.Point(xmin, ymin),
+                arcpy.Point(xmin, ymax),
+                arcpy.Point(xmax, ymax),
+                arcpy.Point(xmax, ymin),
+            ]
+        ),
+        spatial_reference,
+    ).extent
+
+
+def _image_service_raster_properties(raster, service_url, messages):
+    description = arcpy.Describe(raster)
+    source_spatial_reference = getattr(description, "spatialReference", None)
+    cell_width = abs(float(getattr(description, "meanCellWidth", 0) or 0))
+    cell_height = abs(float(getattr(description, "meanCellHeight", 0) or 0))
+    property_source = "layer description"
+
+    if not cell_width or not cell_height:
+        try:
+            cell_width = abs(
+                float(
+                    arcpy.management.GetRasterProperties(
+                        raster, "CELLSIZEX"
+                    ).getOutput(0)
+                )
+            )
+            cell_height = abs(
+                float(
+                    arcpy.management.GetRasterProperties(
+                        raster, "CELLSIZEY"
+                    ).getOutput(0)
+                )
+            )
+            property_source = "ArcPy raster properties"
+        except Exception:
+            cell_width = 0
+            cell_height = 0
+
+    has_spatial_reference = (
+        source_spatial_reference
+        and getattr(source_spatial_reference, "name", "Unknown") != "Unknown"
+    )
+    service_info_error = None
+    if not has_spatial_reference or not cell_width or not cell_height:
+        try:
+            service_info = _request_json(
+                f"{service_url}?{urllib.parse.urlencode({'f': 'json'})}"
+            )
+            if service_info.get("error"):
+                raise RuntimeError(service_info["error"].get("message", "REST error"))
+
+            if not cell_width:
+                cell_width = abs(float(service_info.get("pixelSizeX") or 0))
+            if not cell_height:
+                cell_height = abs(float(service_info.get("pixelSizeY") or 0))
+            if not has_spatial_reference:
+                spatial_reference_info = service_info.get("spatialReference") or {}
+                wkid = (
+                    spatial_reference_info.get("latestWkid")
+                    or spatial_reference_info.get("wkid")
+                )
+                if wkid:
+                    source_spatial_reference = arcpy.SpatialReference(int(wkid))
+                elif spatial_reference_info.get("wkt"):
+                    source_spatial_reference = arcpy.SpatialReference()
+                    source_spatial_reference.loadFromString(
+                        spatial_reference_info["wkt"]
+                    )
+            property_source = "image-service REST metadata"
+        except Exception as error:
+            service_info_error = error
+
+    if (
+        not source_spatial_reference
+        or getattr(source_spatial_reference, "name", "Unknown") == "Unknown"
+        or not cell_width
+        or not cell_height
+    ):
+        detail = f" Details: {service_info_error}" if service_info_error else ""
+        raise arcpy.ExecuteError(
+            "The post-event image service did not expose a usable coordinate system "
+            f"and native pixel size through ArcPy or its REST endpoint.{detail}"
+        )
+
+    messages.addMessage(
+        f"Post-event image-service native pixel size: {cell_width:g} by "
+        f"{cell_height:g} ({property_source})."
+    )
+    return source_spatial_reference, cell_width, cell_height
+
+
+def _image_service_url(raster):
+    candidates = []
+    try:
+        candidates.append(raster.dataSource)
+    except Exception:
+        pass
+    try:
+        candidates.append(arcpy.Describe(raster).catalogPath)
+    except Exception:
+        pass
+    return next(
+        (
+            value.split("?")[0].rstrip("/")
+            for value in candidates
+            if isinstance(value, str) and "/imageserver" in value.lower()
+        ),
+        None,
+    )
+
+
+def _project_extent(extent, source_spatial_reference, target_spatial_reference):
+    source_wkid = (
+        getattr(source_spatial_reference, "factoryCode", 0)
+        or getattr(source_spatial_reference, "latestWkid", 0)
+        or 0
+    )
+    target_wkid = (
+        getattr(target_spatial_reference, "factoryCode", 0)
+        or getattr(target_spatial_reference, "latestWkid", 0)
+        or 0
+    )
+    if source_wkid and source_wkid == target_wkid:
+        return extent
+
+    extent_polygon = arcpy.Polygon(
+        arcpy.Array(
+            [
+                arcpy.Point(extent.XMin, extent.YMin),
+                arcpy.Point(extent.XMin, extent.YMax),
+                arcpy.Point(extent.XMax, extent.YMax),
+                arcpy.Point(extent.XMax, extent.YMin),
+            ]
+        ),
+        source_spatial_reference,
+    )
+    transformations = arcpy.ListTransformations(
+        source_spatial_reference, target_spatial_reference
+    )
+    transformation = transformations[0] if transformations else None
+    return extent_polygon.projectAs(
+        target_spatial_reference, transformation
+    ).extent
+
+
+def _ensure_web_mercator_raster(raster, label, messages):
     spatial_reference = getattr(arcpy.Describe(raster), "spatialReference", None)
     wkid = (
         getattr(spatial_reference, "factoryCode", 0)
@@ -850,47 +2043,755 @@ def _get_wayback_releases():
     try:
         catalog = _request_json(WAYBACK_CATALOG_URL)
         releases = []
-        for entry in catalog.values():
+        for release_number, entry in catalog.items():
             title = entry.get("itemTitle")
-            item_id = entry.get("itemID")
+            metadata_url = entry.get("metadataLayerUrl")
+            tile_url = entry.get("itemURL")
             date_match = re.search(r"(\d{4}-\d{2}-\d{2})", title or "")
-            if title and item_id and date_match:
-                releases.append((title, item_id, date_match.group(1)))
-        _WAYBACK_RELEASES = sorted(releases, key=lambda item: item[2], reverse=True)
+            if title and metadata_url and tile_url and date_match:
+                releases.append(
+                    (
+                        title,
+                        date_match.group(1),
+                        metadata_url,
+                        tile_url,
+                        int(release_number),
+                    )
+                )
+        _WAYBACK_RELEASES = sorted(releases, key=lambda item: item[1], reverse=True)
     except Exception:
-        _WAYBACK_RELEASES = []
+        return []
     return _WAYBACK_RELEASES
 
 
-def _resolve_wayback_imagery(release_title, messages):
+def _get_wayback_release(release_title):
     release = next(
         (item for item in _get_wayback_releases() if item[0] == release_title), None
     )
     if release is None:
         raise arcpy.ExecuteError(
             "The selected Wayback release could not be resolved. Refresh the toolbox "
-            "while connected to the internet or provide pre-event imagery."
+            "while connected to the internet or provide input imagery."
         )
+    return release
+
+
+def _get_wayback_filter_extent(aoi, target_features):
+    dataset = aoi or target_features
+    if dataset:
+        try:
+            description = arcpy.Describe(dataset)
+            spatial_reference = description.spatialReference
+            if spatial_reference and spatial_reference.name != "Unknown":
+                return description.extent, spatial_reference
+        except Exception:
+            return None
+
+    environment_extent = _get_environment_extent()
+    if environment_extent:
+        spatial_reference = getattr(environment_extent, "spatialReference", None)
+        if spatial_reference and getattr(spatial_reference, "name", "Unknown") != "Unknown":
+            return environment_extent, spatial_reference
 
     try:
-        active_map = arcpy.mp.ArcGISProject("CURRENT").activeMap
-        if active_map is None:
-            raise RuntimeError("No active map is available.")
-        for layer in active_map.listLayers():
-            if layer.name == release_title:
-                messages.addMessage(f"Using map layer: {release_title}")
-                return layer
+        active_view = arcpy.mp.ArcGISProject("CURRENT").activeView
+        display_extent = active_view.camera.getExtent()
+        spatial_reference = getattr(display_extent, "spatialReference", None)
+        if spatial_reference and getattr(spatial_reference, "name", "Unknown") != "Unknown":
+            return display_extent, spatial_reference
+    except Exception:
+        pass
+    return None
 
-        item_path = f"https://www.arcgis.com/home/item.html?id={release[1]}"
-        messages.addMessage(f"Adding Wayback release to the active map: {release_title}")
-        added_layer = active_map.addDataFromPath(item_path)
-        if added_layer is None:
-            raise RuntimeError("ArcGIS Pro did not return the added layer.")
-        return added_layer
+
+def _wayback_filter_key(filter_extent):
+    if not filter_extent:
+        return None
+    extent, spatial_reference = filter_extent
+    wkid = (
+        getattr(spatial_reference, "factoryCode", 0)
+        or getattr(spatial_reference, "latestWkid", 0)
+        or spatial_reference.name
+    )
+    return (
+        round(extent.XMin, 3),
+        round(extent.YMin, 3),
+        round(extent.XMax, 3),
+        round(extent.YMax, 3),
+        wkid,
+    )
+
+
+def _get_wayback_releases_with_local_changes(
+    analysis_extent, spatial_reference, level=18
+):
+    releases = _get_wayback_releases()
+    if not releases:
+        return []
+
+    xmin, ymin, xmax, ymax = _web_mercator_envelope(
+        analysis_extent, spatial_reference
+    )
+    resolution = WEB_MERCATOR_INITIAL_RESOLUTION / (2**level)
+    tile_span = resolution * 256
+    column = math.floor((((xmin + xmax) / 2) + WEB_MERCATOR_ORIGIN) / tile_span)
+    row = math.floor((WEB_MERCATOR_ORIGIN - ((ymin + ymax) / 2)) / tile_span)
+    releases_by_number = {release[4]: release for release in releases}
+    release_indexes = {
+        release[4]: index for index, release in enumerate(releases)
+    }
+    current_release_number = releases[0][4]
+    local_release_numbers = []
+
+    while current_release_number is not None:
+        response = _request_json(
+            f"{WAYBACK_MAP_SERVER_URL}/tilemap/{current_release_number}/"
+            f"{level}/{row}/{column}"
+        )
+        if not response.get("data") or not response["data"][0]:
+            break
+
+        selected = response.get("select") or []
+        changed_release_number = (
+            int(selected[0]) if selected and selected[0] else current_release_number
+        )
+        if changed_release_number not in local_release_numbers:
+            local_release_numbers.append(changed_release_number)
+
+        release_index = release_indexes.get(changed_release_number)
+        if release_index is None or release_index + 1 >= len(releases):
+            break
+        current_release_number = releases[release_index + 1][4]
+
+    return [
+        releases_by_number[release_number]
+        for release_number in local_release_numbers
+        if release_number in releases_by_number
+    ]
+
+
+def _validate_wayback_coverage(
+    release_title, analysis_extent, spatial_reference, label, messages
+):
+    release = _get_wayback_release(release_title)
+
+    envelope = _web_mercator_envelope(analysis_extent, spatial_reference)
+    query = urllib.parse.urlencode(
+        {
+            "f": "json",
+            "geometry": ",".join(f"{value:.6f}" for value in envelope),
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": "3857",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "SRC_DATE2,SRC_RES,SRC_DESC,NICE_NAME,DrawOrder",
+            "returnGeometry": "false",
+        }
+    )
+    try:
+        response = _request_json(f"{release[2]}/5/query?{query}")
+    except Exception as error:
+        messages.addWarningMessage(
+            f"Could not validate {label.lower()} Wayback metadata over the analysis "
+            f"area. The selected release will still be used. Details: {error}"
+        )
+        return None
+
+    if response.get("error"):
+        messages.addWarningMessage(
+            f"Could not validate {label.lower()} Wayback metadata over the analysis "
+            "area. The selected release will still be used."
+        )
+        return None
+
+    metadata = {
+        (
+            attributes.get("SRC_DATE2"),
+            attributes.get("SRC_RES"),
+            attributes.get("SRC_DESC") or "Unknown source",
+            attributes.get("NICE_NAME") or "Unnamed imagery",
+            attributes.get("DrawOrder") or 0,
+        )
+        for feature in response.get("features", [])
+        for attributes in [feature.get("attributes", {})]
+    }
+    if not metadata:
+        raise arcpy.ExecuteError(
+            f"The selected {label.lower()} Wayback release has no imagery metadata "
+            "covering the analysis area. Choose another release or input imagery."
+        )
+
+    top_draw_order = max(item[4] for item in metadata)
+    displayed_metadata = frozenset(
+        item[:4] for item in metadata if item[4] == top_draw_order
+    )
+    dated_metadata = [item for item in displayed_metadata if item[0] is not None]
+    newest = min(
+        dated_metadata or displayed_metadata,
+        key=lambda item: (
+            float(item[1]) if item[1] is not None else float("inf"),
+            -(item[0] or 0),
+        ),
+    )
+    acquisition_date = (
+        datetime.fromtimestamp(newest[0] / 1000, timezone.utc).strftime("%Y-%m-%d")
+        if newest[0] is not None
+        else "unknown"
+    )
+    resolution = (
+        f"{float(newest[1]):g} m" if newest[1] is not None else "unknown resolution"
+    )
+    messages.addMessage(
+        f"{label} Wayback coverage: local imagery acquired {acquisition_date}; "
+        f"{newest[2]}; {newest[3]}; {resolution}."
+    )
+    return displayed_metadata
+
+
+def _web_mercator_envelope(extent, spatial_reference):
+    wkid = (
+        getattr(spatial_reference, "factoryCode", 0)
+        or getattr(spatial_reference, "latestWkid", 0)
+        or 0
+    )
+    if wkid in WEB_MERCATOR_WKIDS:
+        projected_extent = extent
+    else:
+        extent_polygon = arcpy.Polygon(
+            arcpy.Array(
+                [
+                    arcpy.Point(extent.XMin, extent.YMin),
+                    arcpy.Point(extent.XMin, extent.YMax),
+                    arcpy.Point(extent.XMax, extent.YMax),
+                    arcpy.Point(extent.XMax, extent.YMin),
+                ]
+            ),
+            spatial_reference,
+        )
+        projected_extent = extent_polygon.projectAs(
+            arcpy.SpatialReference(3857)
+        ).extent
+    return (
+        projected_extent.XMin,
+        projected_extent.YMin,
+        projected_extent.XMax,
+        projected_extent.YMax,
+    )
+
+
+def _wayback_cell_size(metadata, default_cell_size):
+    resolutions = [
+        float(item[1])
+        for item in metadata or []
+        if item[1] is not None and float(item[1]) > 0
+    ]
+    return max(min(resolutions), default_cell_size) if resolutions else default_cell_size
+
+
+def _resolve_post_event_imagery(
+    source,
+    input_raster,
+    wayback_release_title,
+    analysis_extent,
+    spatial_reference,
+    messages,
+):
+    if source == "Input Imagery":
+        return input_raster, None, None
+
+    if source == "Current World Imagery":
+        raster, cache = _materialize_tiled_embedding_cache(
+            "Current World Imagery",
+            WORLD_IMAGERY_TILE_URL,
+            "current_world_imagery",
+            analysis_extent,
+            spatial_reference,
+            0.3,
+            messages,
+        )
+        return raster, cache, None
+
+    metadata = _validate_wayback_coverage(
+        wayback_release_title,
+        analysis_extent,
+        spatial_reference,
+        "Post-event",
+        messages,
+    )
+    raster, cache = _materialize_wayback_embedding_cache(
+        wayback_release_title,
+        analysis_extent,
+        spatial_reference,
+        _wayback_cell_size(metadata, 0.3),
+        messages,
+    )
+    return raster, cache, metadata
+
+
+def _materialize_wayback_embedding_cache(
+    release_title,
+    analysis_extent,
+    spatial_reference,
+    requested_cell_size,
+    messages,
+):
+    release = _get_wayback_release(release_title)
+
+    return _materialize_tiled_embedding_cache(
+        release_title,
+        release[3],
+        release[4],
+        analysis_extent,
+        spatial_reference,
+        requested_cell_size,
+        messages,
+    )
+
+
+def _materialize_tiled_embedding_cache(
+    source_title,
+    tile_url_template,
+    source_id,
+    analysis_extent,
+    spatial_reference,
+    requested_cell_size,
+    messages,
+):
+    grid = _tiled_imagery_grid(
+        analysis_extent,
+        spatial_reference,
+        requested_cell_size,
+    )
+    cache_root = _tiled_embedding_cache_root(
+        source_id, tile_url_template, grid
+    )
+    block_folder = os.path.join(cache_root, "blocks")
+    staging_root = os.path.join(cache_root, "staging")
+    os.makedirs(block_folder, exist_ok=True)
+    os.makedirs(staging_root, exist_ok=True)
+    web_mercator = arcpy.SpatialReference(3857)
+    projection_text = web_mercator.exportToString()
+    block_records = []
+    reused_block_count = 0
+    block_row_starts = range(
+        grid["row_min"], grid["row_max"] + 1, WAYBACK_BLOCK_TILES
+    )
+    block_column_starts = range(
+        grid["column_min"], grid["column_max"] + 1, WAYBACK_BLOCK_TILES
+    )
+    block_count = len(block_row_starts) * len(block_column_starts)
+
+    messages.addMessage(f"Resumable {source_title} processing cache: {cache_root}")
+    messages.addMessage(
+        f"Caching {grid['tile_count']:,} {source_title} tiles as "
+        f"{block_count:,} aligned raster blocks at level {grid['level']} "
+        f"({grid['resolution']:.3f} m pixels)..."
+    )
+    try:
+        for block_row in block_row_starts:
+            last_row = min(
+                grid["row_max"], block_row + WAYBACK_BLOCK_TILES - 1
+            )
+            for block_column in block_column_starts:
+                last_column = min(
+                    grid["column_max"],
+                    block_column + WAYBACK_BLOCK_TILES - 1,
+                )
+                block_extent = _wayback_tile_range_extent(
+                    block_row,
+                    last_row,
+                    block_column,
+                    last_column,
+                    grid["tile_span"],
+                    web_mercator,
+                )
+                block_path = os.path.join(
+                    block_folder,
+                    f"wayback_{block_row}_{block_column}.tif",
+                )
+                expected_columns = (last_column - block_column + 1) * 256
+                expected_rows = (last_row - block_row + 1) * 256
+                block_records.append(
+                    (
+                        block_path,
+                        block_extent.XMin,
+                        block_extent.YMin,
+                        block_extent.XMax,
+                        block_extent.YMax,
+                    )
+                )
+                if _valid_tiled_imagery_block(
+                    block_path,
+                    expected_columns,
+                    expected_rows,
+                    grid["resolution"],
+                    block_extent,
+                ):
+                    reused_block_count += 1
+                    continue
+
+                _delete_cached_raster(block_path)
+                _delete_checkpoint_marker(block_path)
+                staging_folder = os.path.join(
+                    staging_root, f"block_{block_row}_{block_column}"
+                )
+                shutil.rmtree(staging_folder, ignore_errors=True)
+                os.makedirs(staging_folder, exist_ok=True)
+                tile_paths = []
+                for row in range(block_row, last_row + 1):
+                    for column in range(block_column, last_column + 1):
+                        tile_path = os.path.join(
+                            staging_folder, f"tile_{row}_{column}.jpg"
+                        )
+                        _download_tiled_imagery_tile(
+                            tile_url_template,
+                            grid["level"],
+                            row,
+                            column,
+                            tile_path,
+                            grid["resolution"],
+                            grid["tile_span"],
+                            projection_text,
+                        )
+                        tile_paths.append(tile_path)
+
+                with arcpy.EnvManager(
+                    extent=block_extent,
+                    snapRaster=tile_paths[0],
+                    cellSize=grid["resolution"],
+                    outputCoordinateSystem=web_mercator,
+                    compression="LZW",
+                ):
+                    arcpy.management.MosaicToNewRaster(
+                        input_rasters=tile_paths,
+                        output_location=block_folder,
+                        raster_dataset_name_with_extension=os.path.basename(
+                            block_path
+                        ),
+                        coordinate_system_for_the_raster=web_mercator,
+                        pixel_type="8_BIT_UNSIGNED",
+                        cellsize=grid["resolution"],
+                        number_of_bands=3,
+                        mosaic_method="FIRST",
+                        mosaic_colormap_mode="FIRST",
+                    )
+                if not _valid_tiled_imagery_block(
+                    block_path,
+                    expected_columns,
+                    expected_rows,
+                    grid["resolution"],
+                    block_extent,
+                    require_marker=False,
+                ):
+                    _delete_cached_raster(block_path)
+                    raise arcpy.ExecuteError(
+                        f"{source_title} block assembly did not create the expected "
+                        "readable "
+                        f"raster: {block_path}"
+                    )
+                _write_checkpoint_marker(block_path)
+                try:
+                    arcpy.management.ClearWorkspaceCache()
+                except Exception:
+                    pass
+                shutil.rmtree(staging_folder, ignore_errors=True)
+
+        if reused_block_count:
+            messages.addMessage(
+                f"Resumed Wayback cache with {reused_block_count:,} of "
+                f"{block_count:,} raster blocks already complete."
+            )
+        shutil.rmtree(staging_root, ignore_errors=True)
+        source_extent = _wayback_tile_range_extent(
+            grid["row_min"],
+            grid["row_max"],
+            grid["column_min"],
+            grid["column_max"],
+            grid["tile_span"],
+            web_mercator,
+        )
+        messages.addMessage(
+            f"Cached {source_title} blocks are ready for extent-based processing."
+        )
+        return block_records[0][0], {
+            "cache_root": cache_root,
+            "tile_records": tuple(block_records),
+            "source_extent": source_extent,
+            "spatial_reference": web_mercator,
+            "cell_width": grid["resolution"],
+            "cell_height": grid["resolution"],
+        }
     except Exception as error:
         raise arcpy.ExecuteError(
-            f"Could not add {release_title} to the active map. Add that Living Atlas "
-            f"Wayback layer to the map and run the tool again. Details: {error}"
+            f"Could not complete the resumable {source_title} cache. Run the "
+            f"tool again to continue from {cache_root}. Details: {error}"
+        )
+
+
+def _tiled_imagery_grid(
+    analysis_extent,
+    spatial_reference,
+    requested_cell_size,
+):
+    xmin, ymin, xmax, ymax = _web_mercator_envelope(
+        analysis_extent, spatial_reference
+    )
+    level = max(
+        0,
+        min(
+            23,
+            math.floor(
+                math.log(
+                    WEB_MERCATOR_INITIAL_RESOLUTION / requested_cell_size, 2
+                )
+            ),
+        ),
+    )
+    resolution = WEB_MERCATOR_INITIAL_RESOLUTION / (2**level)
+    tile_span = resolution * 256
+    column_min = math.floor((xmin + WEB_MERCATOR_ORIGIN) / tile_span)
+    column_max = math.floor(
+        (xmax + WEB_MERCATOR_ORIGIN - resolution / 1000) / tile_span
+    )
+    row_min = math.floor((WEB_MERCATOR_ORIGIN - ymax) / tile_span)
+    row_max = math.floor(
+        (WEB_MERCATOR_ORIGIN - ymin - resolution / 1000) / tile_span
+    )
+    tile_count = (column_max - column_min + 1) * (row_max - row_min + 1)
+    matrix_size = 2**level
+    if (
+        tile_count < 1
+        or column_min < 0
+        or row_min < 0
+        or column_max >= matrix_size
+        or row_max >= matrix_size
+    ):
+        raise arcpy.ExecuteError(
+            "The AOI/Extent falls outside the supported World Imagery Wayback "
+            "Web Mercator tile grid."
+        )
+    return {
+        "level": level,
+        "resolution": resolution,
+        "tile_span": tile_span,
+        "column_min": column_min,
+        "column_max": column_max,
+        "row_min": row_min,
+        "row_max": row_max,
+        "tile_count": tile_count,
+    }
+
+
+def _tiled_embedding_cache_root(source_id, tile_url_template, grid):
+    cache_key = json.dumps(
+        {
+            "cache_format": WAYBACK_CACHE_FORMAT_VERSION,
+            "source_id": source_id,
+            "tile_url": tile_url_template,
+            "level": grid["level"],
+            "rows": [grid["row_min"], grid["row_max"]],
+            "columns": [grid["column_min"], grid["column_max"]],
+            "block_tiles": WAYBACK_BLOCK_TILES,
+        },
+        sort_keys=True,
+    )
+    cache_id = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(
+        arcpy.env.scratchFolder, f"DamageAssessment_Wayback_{cache_id}"
+    )
+
+
+def _valid_tiled_imagery_block(
+    raster_path,
+    expected_columns,
+    expected_rows,
+    resolution,
+    expected_extent,
+    require_marker=True,
+):
+    if require_marker and not os.path.isfile(_checkpoint_marker(raster_path)):
+        return False
+    if not _valid_raster_output(raster_path):
+        return False
+    try:
+        properties = {
+            name: arcpy.management.GetRasterProperties(
+                raster_path, name
+            ).getOutput(0)
+            for name in (
+                "COLUMNCOUNT",
+                "ROWCOUNT",
+                "BANDCOUNT",
+                "CELLSIZEX",
+                "CELLSIZEY",
+            )
+        }
+        raster = arcpy.Raster(raster_path)
+        description = arcpy.Describe(raster_path)
+        spatial_reference = description.spatialReference
+        actual_extent = description.extent
+        wkid = (
+            getattr(spatial_reference, "factoryCode", 0)
+            or getattr(spatial_reference, "latestWkid", 0)
+            or 0
+        )
+        tolerance = resolution / 1000.0
+        extent_matches = all(
+            abs(actual - expected) <= tolerance
+            for actual, expected in (
+                (actual_extent.XMin, expected_extent.XMin),
+                (actual_extent.YMin, expected_extent.YMin),
+                (actual_extent.XMax, expected_extent.XMax),
+                (actual_extent.YMax, expected_extent.YMax),
+            )
+        )
+        return (
+            int(float(properties["COLUMNCOUNT"])) == expected_columns
+            and int(float(properties["ROWCOUNT"])) == expected_rows
+            and int(float(properties["BANDCOUNT"])) == 3
+            and str(raster.pixelType).upper() == "U8"
+            and abs(float(properties["CELLSIZEX"]) - resolution) <= tolerance
+            and abs(abs(float(properties["CELLSIZEY"])) - resolution) <= tolerance
+            and wkid in WEB_MERCATOR_WKIDS
+            and extent_matches
+        )
+    except Exception:
+        return False
+
+
+def _wayback_tile_range_extent(
+    first_row,
+    last_row,
+    first_column,
+    last_column,
+    tile_span,
+    spatial_reference,
+):
+    return _spatial_extent(
+        -WEB_MERCATOR_ORIGIN + first_column * tile_span,
+        WEB_MERCATOR_ORIGIN - (last_row + 1) * tile_span,
+        -WEB_MERCATOR_ORIGIN + (last_column + 1) * tile_span,
+        WEB_MERCATOR_ORIGIN - first_row * tile_span,
+        spatial_reference,
+    )
+
+
+def _download_tiled_imagery_tile(
+    tile_url_template,
+    level,
+    row,
+    column,
+    tile_path,
+    resolution,
+    tile_span,
+    projection_text,
+):
+    tile_url = (
+        tile_url_template
+        .replace("{level}", str(level))
+        .replace("{row}", str(row))
+        .replace("{col}", str(column))
+    )
+    request = urllib.request.Request(
+        tile_url, headers={"User-Agent": "ArcGIS-Damage-Assessment"}
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        image_bytes = response.read()
+    if not image_bytes.startswith(b"\xff\xd8"):
+        raise RuntimeError(
+            f"Wayback returned a non-JPEG response for tile {level}/{row}/{column}."
+        )
+    with open(tile_path, "wb") as tile_file:
+        tile_file.write(image_bytes)
+
+    tile_xmin = -WEB_MERCATOR_ORIGIN + column * tile_span
+    tile_ymax = WEB_MERCATOR_ORIGIN - row * tile_span
+    with open(
+        os.path.splitext(tile_path)[0] + ".jgw", "w", encoding="ascii"
+    ) as file_handle:
+        file_handle.write(
+            f"{resolution}\n0\n0\n{-resolution}\n"
+            f"{tile_xmin + resolution / 2}\n"
+            f"{tile_ymax - resolution / 2}\n"
+        )
+    with open(
+        os.path.splitext(tile_path)[0] + ".prj", "w", encoding="utf-8"
+    ) as file_handle:
+        file_handle.write(projection_text)
+
+
+def _materialize_wayback_imagery(
+    release_title,
+    analysis_extent,
+    spatial_reference,
+    requested_cell_size,
+    output_label,
+    messages,
+):
+    release = _get_wayback_release(release_title)
+
+    grid = _tiled_imagery_grid(
+        analysis_extent,
+        spatial_reference,
+        requested_cell_size,
+    )
+    if grid["tile_count"] > MAX_WAYBACK_TILES:
+        raise arcpy.ExecuteError(
+            f"The analysis area requires {grid['tile_count']:,} Wayback tiles at "
+            f"level {grid['level']} ({grid['resolution']:.3f} m pixels), exceeding "
+            f"the {MAX_WAYBACK_TILES:,}-tile safety limit. Reduce the AOI/Extent "
+            "or use a local raster."
+        )
+
+    scratch_folder = arcpy.env.scratchFolder
+    output_raster = arcpy.CreateUniqueName(
+        f"Wayback_{output_label}.tif", scratch_folder
+    )
+    tile_folder = f"{os.path.splitext(output_raster)[0]}_tiles"
+    os.makedirs(tile_folder, exist_ok=True)
+    web_mercator = arcpy.SpatialReference(3857)
+    projection_text = web_mercator.exportToString()
+    tile_paths = []
+    messages.addMessage(
+        f"Materializing {release_title}: downloading {grid['tile_count']:,} tiles "
+        f"at level {grid['level']} ({grid['resolution']:.3f} m pixels)..."
+    )
+    try:
+        for row in range(grid["row_min"], grid["row_max"] + 1):
+            for column in range(grid["column_min"], grid["column_max"] + 1):
+                tile_path = os.path.join(tile_folder, f"tile_{row}_{column}.jpg")
+                _download_tiled_imagery_tile(
+                    release[3],
+                    grid["level"],
+                    row,
+                    column,
+                    tile_path,
+                    grid["resolution"],
+                    grid["tile_span"],
+                    projection_text,
+                )
+                tile_paths.append(tile_path)
+
+        arcpy.management.MosaicToNewRaster(
+            input_rasters=tile_paths,
+            output_location=os.path.dirname(output_raster),
+            raster_dataset_name_with_extension=os.path.basename(output_raster),
+            coordinate_system_for_the_raster=web_mercator,
+            pixel_type="8_BIT_UNSIGNED",
+            cellsize=grid["resolution"],
+            number_of_bands=3,
+            mosaic_method="FIRST",
+            mosaic_colormap_mode="FIRST",
+        )
+        shutil.rmtree(tile_folder, ignore_errors=True)
+        messages.addMessage(f"Created local Wayback raster: {output_raster}")
+        return output_raster
+    except Exception as error:
+        if arcpy.Exists(output_raster):
+            arcpy.management.Delete(output_raster)
+        shutil.rmtree(tile_folder, ignore_errors=True)
+        raise arcpy.ExecuteError(
+            f"Could not materialize {release_title} as a local raster. "
+            f"Use a smaller AOI/Extent or provide input imagery. Details: {error}"
         )
 
 
