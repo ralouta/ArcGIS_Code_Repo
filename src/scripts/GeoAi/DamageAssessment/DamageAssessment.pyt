@@ -1812,6 +1812,7 @@ def _generate_embeddings(
         for index, chunk_extent in enumerate(chunk_extents, start=1):
             chunk_output = output_embeddings
             chunk_raster = None
+            embedding_layer = arcpy.CreateUniqueName("embedding_input_raster")
             if use_chunks:
                 chunk_output = os.path.join(
                     chunk_workspace, f"EmbeddingChunk_{index:04d}"
@@ -1858,9 +1859,10 @@ def _generate_embeddings(
                 environment["snapRaster"] = embedding_input
 
             try:
+                arcpy.management.MakeRasterLayer(embedding_input, embedding_layer)
                 with arcpy.EnvManager(**environment):
                     arcpy.geoai.GenerateEmbeddingsUsingAIModels(
-                        in_data=embedding_input,
+                        in_data=embedding_layer,
                         out_embeddings_feature_class=chunk_output,
                         in_model_definition_file=model,
                         arguments=(
@@ -1871,6 +1873,8 @@ def _generate_embeddings(
                     )
             finally:
                 _release_gpu_memory()
+                if arcpy.Exists(embedding_layer):
+                    arcpy.management.Delete(embedding_layer)
                 if use_chunks:
                     del embedding_input
                     _delete_cached_raster(chunk_raster)
