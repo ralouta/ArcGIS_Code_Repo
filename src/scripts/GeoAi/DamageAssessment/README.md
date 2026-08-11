@@ -48,7 +48,7 @@ Current World Imagery and post-event Wayback support larger extents through the 
 
 Tile level selection respects the locally reported source resolution and always chooses a cache level at or coarser than that resolution. This avoids requesting uncached high-resolution tiles where a Wayback release only provides coarser local imagery.
 
-For feature extraction, either provide an **Area of Interest Polygon** or open the tool's **Environments** settings and set **Extent** to Current Display Extent, a map layer, or specified coordinates. An AOI polygon takes precedence when both are supplied. With existing target features and neither option set, their full extent is used.
+For feature extraction, either provide an **Area of Interest Polygon** or open the tool's **Environments** settings and set **Extent** to Current Display Extent, a map layer, or specified coordinates. An AOI polygon takes precedence when both are supplied. When supplied target features extend beyond available imagery, provide an AOI to clip them to the analysis boundary; embedding generation, similarity analysis, and the final classified output then use only the clipped targets. The clipped target feature class is retained or removed according to **Keep Intermediate Data**, while the original target dataset is never modified. With existing target features and neither an AOI nor an Extent environment set, their full extent is used. The Extent environment limits imagery processing but does not clip supplied target geometry; use an AOI when the final output must be restricted to the imagery footprint.
 
 Feature-specific detection cell sizes are starting profiles and remain editable. Leave **Embedding Grid Size** blank to automatically estimate an odd grid size from the median target width and post-event image resolution, or provide a tested positive value such as `5`.
 
@@ -59,3 +59,9 @@ The tool validates the minimum of 6 damage-example features in the ArcGIS Pro di
 Damage classes are relative image evidence, not confirmation of structural damage. Validate moderate and high results against post-event imagery or field observations.
 
 Leave **Keep Intermediate Data** checked to retain generated target features, post-event embeddings, and similar embedding features. Uncheck it to delete those generated datasets after the classified output is created. User-supplied target features are never deleted.
+
+## Rerunning similarity and classification
+
+To adjust the similarity or coverage thresholds without regenerating embeddings, provide a retained embedding feature class in **Existing Post-Event Embeddings**. The tool validates that the input contains a BLOB embedding field, skips post-event imagery preparation, model loading, GPU validation, embedding generation, and chunk assembly, then reruns similarity and classification. Use embeddings created from the same post-event imagery, extent, model, grid size, and output coordinate system as the targets being analyzed.
+
+When the classified output already exists, the output parameter warns that it will be replaced. Replacement occurs only after similarity analysis succeeds, so an upstream failure leaves the previous classified result intact. The tool never modifies or deletes supplied embeddings, including when **Keep Intermediate Data** is off, and rejects an output path that aliases target features or supplied embeddings.

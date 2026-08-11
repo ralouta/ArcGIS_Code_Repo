@@ -16,7 +16,7 @@ import urllib.request
 import arcpy
 
 
-TOOL_VERSION = "5.2.2"
+TOOL_VERSION = "5.3.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -148,6 +148,7 @@ class AutomatedDamageAssessment(object):
     OUT_EMBEDDINGS = 23
     OUT_SIMILAR = 24
     KEEP_INTERMEDIATE = 25
+    EXISTING_EMBEDDINGS = 26
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
@@ -186,7 +187,10 @@ class AutomatedDamageAssessment(object):
         feature_type.category = "1. Target Features"
 
         aoi = arcpy.Parameter(
-            displayName="Area of Interest Polygon (Optional; Overrides Extent Environment)",
+            displayName=(
+                "Area of Interest Polygon (Optional; Clips Supplied Targets and "
+                "Overrides Extent)"
+            ),
             name="in_aoi",
             datatype="GPFeatureLayer",
             parameterType="Optional",
@@ -433,6 +437,16 @@ class AutomatedDamageAssessment(object):
         keep_intermediate.value = True
         keep_intermediate.category = "4. Outputs and Classification"
 
+        existing_embeddings = arcpy.Parameter(
+            displayName="Existing Post-Event Embeddings (Optional; Skips Generation)",
+            name="in_existing_embeddings",
+            datatype="GPFeatureLayer",
+            parameterType="Optional",
+            direction="Input",
+        )
+        existing_embeddings.filter.list = ["Polygon"]
+        existing_embeddings.category = "3. Post-Event Similarity"
+
         return [
             in_target,
             feature_type,
@@ -460,12 +474,16 @@ class AutomatedDamageAssessment(object):
             out_embeddings,
             out_similar,
             keep_intermediate,
+            existing_embeddings,
         ]
 
     def updateParameters(self, parameters):
         has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
+        has_existing_embeddings = bool(
+            parameters[self.EXISTING_EMBEDDINGS].valueAsText
+        )
+        parameters[self.AOI].enabled = True
         for index in (
-            self.AOI,
             self.PRE_SOURCE,
             self.PRE_IMAGE,
             self.PRE_WAYBACK,
@@ -481,8 +499,21 @@ class AutomatedDamageAssessment(object):
             parameters[self.PRE_WAYBACK].enabled = pre_source == "World Imagery Wayback"
 
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
-        parameters[self.POST_IMAGE].enabled = post_source == "Input Imagery"
-        parameters[self.POST_WAYBACK].enabled = post_source == "World Imagery Wayback"
+        for index in (
+            self.POST_SOURCE,
+            self.ONLINE_EMBEDDING_MODEL,
+            self.EMBEDDING_MODEL,
+            self.GPU_ID,
+            self.BATCH_SIZE,
+            self.GRID_SIZE,
+        ):
+            parameters[index].enabled = not has_existing_embeddings
+        parameters[self.POST_IMAGE].enabled = (
+            not has_existing_embeddings and post_source == "Input Imagery"
+        )
+        parameters[self.POST_WAYBACK].enabled = (
+            not has_existing_embeddings and post_source == "World Imagery Wayback"
+        )
 
         raster_layer_names = _get_active_map_raster_layer_names()
         parameters[self.PRE_IMAGE].filter.list = raster_layer_names
@@ -490,7 +521,10 @@ class AutomatedDamageAssessment(object):
 
         uses_wayback = (
             (not has_target_features and pre_source == "World Imagery Wayback")
-            or post_source == "World Imagery Wayback"
+            or (
+                not has_existing_embeddings
+                and post_source == "World Imagery Wayback"
+            )
         )
         if uses_wayback:
             filter_extent = _get_wayback_filter_extent(
@@ -558,6 +592,7 @@ class AutomatedDamageAssessment(object):
 
     def updateMessages(self, parameters):
         has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
+        existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         if not has_target_features:
             pre_source = parameters[self.PRE_SOURCE].valueAsText
             if pre_source == "Input Imagery" and not parameters[self.PRE_IMAGE].valueAsText:
@@ -577,12 +612,17 @@ class AutomatedDamageAssessment(object):
                 )
 
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
-        if post_source == "Input Imagery" and not parameters[self.POST_IMAGE].valueAsText:
+        if (
+            not existing_embeddings
+            and post_source == "Input Imagery"
+            and not parameters[self.POST_IMAGE].valueAsText
+        ):
             parameters[self.POST_IMAGE].setErrorMessage(
                 "Provide post-event imagery or choose World Imagery Wayback."
             )
         if (
-            post_source == "World Imagery Wayback"
+            not existing_embeddings
+            and post_source == "World Imagery Wayback"
             and not parameters[self.POST_WAYBACK].valueAsText
         ):
             pre_wayback_selected = (
@@ -623,7 +663,7 @@ class AutomatedDamageAssessment(object):
                 parameters[self.DETECTION_CELL_SIZE], "Detection cell size"
             )
         grid_size = parameters[self.GRID_SIZE].value
-        if grid_size is not None and int(grid_size) < 1:
+        if not existing_embeddings and grid_size is not None and int(grid_size) < 1:
             parameters[self.GRID_SIZE].setErrorMessage(
                 "Grid size must be a positive integer or left blank for Auto."
             )
@@ -635,11 +675,16 @@ class AutomatedDamageAssessment(object):
             )
 
         batch_size = parameters[self.BATCH_SIZE].value
-        if batch_size is not None and int(batch_size) < 1:
+        if not existing_embeddings and batch_size is not None and int(batch_size) < 1:
             parameters[self.BATCH_SIZE].setErrorMessage("Batch size must be at least 1.")
-        elif batch_size is not None and int(batch_size) > 8:
+        elif not existing_embeddings and batch_size is not None and int(batch_size) > 8:
             parameters[self.BATCH_SIZE].setWarningMessage(
                 "Batch sizes above 8 can exhaust GPU memory; start with 4."
+            )
+
+        if existing_embeddings and not _has_embedding_field(existing_embeddings):
+            parameters[self.EXISTING_EMBEDDINGS].setErrorMessage(
+                "Existing post-event embeddings must contain a BLOB embedding field."
             )
 
         sample_parameter = parameters[self.SAMPLE_POINTS]
@@ -665,10 +710,26 @@ class AutomatedDamageAssessment(object):
             parameters[self.MODERATE_THRESHOLD], parameters[self.HIGH_THRESHOLD]
         )
         output_path = parameters[self.OUT_CLASSIFIED].valueAsText
-        if output_path and not _geodatabase_workspace(output_path):
+        if output_path and (
+            _same_dataset(output_path, parameters[self.IN_TARGET].valueAsText)
+            or _same_dataset(output_path, existing_embeddings)
+        ):
+            parameters[self.OUT_CLASSIFIED].setErrorMessage(
+                "The classified output must differ from target features and existing "
+                "post-event embeddings."
+            )
+        elif output_path and not _geodatabase_workspace(output_path):
             parameters[self.OUT_CLASSIFIED].setErrorMessage(
                 "Output must be stored in a file or enterprise geodatabase because "
                 "embedding feature classes contain a BLOB field."
+            )
+        elif (
+            output_path
+            and arcpy.Exists(output_path)
+        ):
+            parameters[self.OUT_CLASSIFIED].setWarningMessage(
+                "The existing classified output will be replaced after similarity "
+                "analysis succeeds."
             )
         return
 
@@ -681,9 +742,10 @@ class AutomatedDamageAssessment(object):
         pre_wayback_release = parameters[self.PRE_WAYBACK].valueAsText
         sam_model = parameters[self.SAM_MODEL].valueAsText
         custom_prompt = parameters[self.CUSTOM_PROMPT].valueAsText
+        existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
         post_image = None
-        if post_source == "Input Imagery":
+        if not existing_embeddings and post_source == "Input Imagery":
             post_image = _resolve_active_map_raster_layer(
                 parameters[self.POST_IMAGE].valueAsText
             )
@@ -709,13 +771,22 @@ class AutomatedDamageAssessment(object):
                 "Output Classified Target Features must be stored in a file or "
                 "enterprise geodatabase."
             )
+        if _same_dataset(out_classified, in_target) or _same_dataset(
+            out_classified, existing_embeddings
+        ):
+            raise arcpy.ExecuteError(
+                "The classified output must differ from target features and existing "
+                "post-event embeddings."
+            )
         scratch_workspace = arcpy.env.scratchGDB
         messages.addMessage(f"Automated Damage Assessment version {TOOL_VERSION}")
         messages.addMessage(f"Feature type: {feature_type}")
-        _validate_gpu_memory(gpu_id, messages)
+        if not in_target or not existing_embeddings:
+            _validate_gpu_memory(gpu_id, messages)
 
         target_features = in_target
         generated_target_features = None
+        generated_embeddings = None
         out_embeddings = None
         out_similar = None
         generated_wayback_rasters = []
@@ -725,8 +796,17 @@ class AutomatedDamageAssessment(object):
         if target_features:
             messages.addMessage("Using user-supplied target features; pre-event extraction is skipped.")
             analysis_extent, analysis_spatial_reference, extent_source = (
-                _resolve_analysis_extent(None, target_features, False)
+                _resolve_analysis_extent(aoi, target_features, False)
             )
+            if aoi:
+                target_features = _clip_targets_to_aoi(
+                    target_features,
+                    aoi,
+                    feature_type,
+                    output_workspace,
+                    messages,
+                )
+                generated_target_features = target_features
         else:
             detection_cell_size = float(
                 parameters[self.DETECTION_CELL_SIZE].value
@@ -786,18 +866,19 @@ class AutomatedDamageAssessment(object):
             )
             generated_target_features = target_features
 
-        (
-            post_image,
-            post_event_cache,
-            post_wayback_metadata,
-        ) = _resolve_post_event_imagery(
-            post_source,
-            post_image,
-            parameters[self.POST_WAYBACK].valueAsText,
-            analysis_extent,
-            analysis_spatial_reference,
-            messages,
-        )
+        if not existing_embeddings:
+            (
+                post_image,
+                post_event_cache,
+                post_wayback_metadata,
+            ) = _resolve_post_event_imagery(
+                post_source,
+                post_image,
+                parameters[self.POST_WAYBACK].valueAsText,
+                analysis_extent,
+                analysis_spatial_reference,
+                messages,
+            )
 
         messages.addMessage(f"Analysis extent source: {extent_source}")
         if (
@@ -821,49 +902,68 @@ class AutomatedDamageAssessment(object):
         run_succeeded = False
 
         try:
-            grid_size = requested_grid_size or _recommend_grid_size(
-                target_features, post_image
-            )
-            grid_source = "user supplied" if requested_grid_size else "Auto recommendation"
-            messages.addMessage(f"Embedding grid size: {grid_size} ({grid_source})")
-            selected_model = EMBEDDING_MODELS[online_embedding_model]
-            embedding_model = _resolve_model(
-                embedding_model,
-                selected_model["item_id"],
-                selected_model["file_name"],
-                messages,
-            )
-            output_spatial_reference = arcpy.Describe(target_features).spatialReference
-            if post_event_cache is None:
-                post_image, post_event_cache = _materialize_image_service_if_needed(
-                    post_image,
-                    analysis_extent,
-                    analysis_spatial_reference,
+            if existing_embeddings:
+                if not _has_embedding_field(existing_embeddings):
+                    raise arcpy.ExecuteError(
+                        "Existing post-event embeddings must contain a BLOB "
+                        "embedding field."
+                    )
+                out_embeddings = existing_embeddings
+                messages.addMessage(
+                    "Using existing post-event embeddings; imagery preparation and "
+                    "embedding generation are skipped."
+                )
+            else:
+                grid_size = requested_grid_size or _recommend_grid_size(
+                    target_features, post_image
+                )
+                grid_source = (
+                    "user supplied" if requested_grid_size else "Auto recommendation"
+                )
+                messages.addMessage(
+                    f"Embedding grid size: {grid_size} ({grid_source})"
+                )
+                selected_model = EMBEDDING_MODELS[online_embedding_model]
+                embedding_model = _resolve_model(
                     embedding_model,
-                    grid_size,
-                    batch_size,
-                    output_spatial_reference,
+                    selected_model["item_id"],
+                    selected_model["file_name"],
                     messages,
                 )
-            post_image = _ensure_web_mercator_raster(
-                post_image, "Post-event imagery", messages
-            )
-            out_embeddings = arcpy.CreateUniqueName(
-                "Damage_PostEvent_Embeddings", output_workspace
-            )
-            _generate_embeddings(
-                post_image,
-                out_embeddings,
-                embedding_model,
-                batch_size,
-                grid_size,
-                gpu_id,
-                analysis_extent,
-                analysis_spatial_reference,
-                output_spatial_reference,
-                post_event_cache,
-                messages,
-            )
+                output_spatial_reference = arcpy.Describe(
+                    target_features
+                ).spatialReference
+                if post_event_cache is None:
+                    post_image, post_event_cache = _materialize_image_service_if_needed(
+                        post_image,
+                        analysis_extent,
+                        analysis_spatial_reference,
+                        embedding_model,
+                        grid_size,
+                        batch_size,
+                        output_spatial_reference,
+                        messages,
+                    )
+                post_image = _ensure_web_mercator_raster(
+                    post_image, "Post-event imagery", messages
+                )
+                out_embeddings = arcpy.CreateUniqueName(
+                    "Damage_PostEvent_Embeddings", output_workspace
+                )
+                generated_embeddings = out_embeddings
+                _generate_embeddings(
+                    post_image,
+                    out_embeddings,
+                    embedding_model,
+                    batch_size,
+                    grid_size,
+                    gpu_id,
+                    analysis_extent,
+                    analysis_spatial_reference,
+                    output_spatial_reference,
+                    post_event_cache,
+                    messages,
+                )
             parameters[self.OUT_EMBEDDINGS].value = out_embeddings
 
             out_similar = arcpy.CreateUniqueName(
@@ -877,6 +977,10 @@ class AutomatedDamageAssessment(object):
                 threshold=similarity_threshold,
             )
             parameters[self.OUT_SIMILAR].value = out_similar
+
+            if arcpy.Exists(out_classified):
+                messages.addMessage("Replacing the existing classified output...")
+                arcpy.management.Delete(out_classified)
 
             _run_damage_classification(
                 target_features,
@@ -904,7 +1008,7 @@ class AutomatedDamageAssessment(object):
                 messages.addMessage("Deleting generated intermediate data...")
                 for dataset in (
                     out_similar,
-                    out_embeddings,
+                    generated_embeddings,
                     generated_target_features,
                     *generated_wayback_rasters,
                 ):
@@ -914,7 +1018,8 @@ class AutomatedDamageAssessment(object):
                     if tile_folder and os.path.isdir(tile_folder):
                         shutil.rmtree(tile_folder, ignore_errors=True)
                 parameters[self.OUT_TARGET].value = None
-                parameters[self.OUT_EMBEDDINGS].value = None
+                if generated_embeddings:
+                    parameters[self.OUT_EMBEDDINGS].value = None
                 parameters[self.OUT_SIMILAR].value = None
 
 
@@ -1006,6 +1111,22 @@ def _resolve_analysis_extent(aoi, fallback_dataset, require_explicit_extent):
 def _geodatabase_workspace(dataset_path):
     match = re.search(r"(?i)^(.+?\.(?:gdb|sde))(?:[\\/].*)?$", dataset_path or "")
     return match.group(1) if match else None
+
+
+def _same_dataset(first_dataset, second_dataset):
+    if not first_dataset or not second_dataset:
+        return False
+
+    normalized_paths = []
+    for dataset in (first_dataset, second_dataset):
+        try:
+            dataset = arcpy.Describe(dataset).catalogPath
+        except Exception:
+            pass
+        normalized_paths.append(
+            os.path.normcase(os.path.normpath(str(dataset)))
+        )
+    return normalized_paths[0] == normalized_paths[1]
 
 
 def _meters_to_spatial_units(distance_meters, spatial_reference):
@@ -1665,6 +1786,10 @@ def _release_gpu_memory():
 def _valid_embedding_checkpoint(feature_class):
     if not os.path.isfile(_checkpoint_marker(feature_class)):
         return False
+    return _has_embedding_field(feature_class)
+
+
+def _has_embedding_field(feature_class):
     if not arcpy.Exists(feature_class):
         return False
     try:
@@ -1677,13 +1802,10 @@ def _valid_embedding_checkpoint(feature_class):
 
 
 def _valid_embedding_output(feature_class):
-    if not arcpy.Exists(feature_class):
+    if not _has_embedding_field(feature_class):
         return False
     try:
-        has_embeddings = any(
-            field.type.upper() == "BLOB" for field in arcpy.ListFields(feature_class)
-        )
-        return has_embeddings and int(arcpy.management.GetCount(feature_class)[0]) > 0
+        return int(arcpy.management.GetCount(feature_class)[0]) > 0
     except Exception:
         return False
 
@@ -2829,6 +2951,33 @@ def _resolve_model(local_path, item_id, file_name, messages):
             os.remove(partial_path)
         raise arcpy.ExecuteError(f"Could not download {file_name}: {error}")
     return model_path
+
+
+def _clip_targets_to_aoi(
+    target_features,
+    aoi,
+    feature_type,
+    output_workspace,
+    messages,
+):
+    safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
+    clipped_targets = arcpy.CreateUniqueName(
+        f"Damage_{safe_feature_type}_AOI", output_workspace
+    )
+    messages.addMessage(
+        "Clipping supplied target features to the Area of Interest..."
+    )
+    arcpy.analysis.PairwiseClip(target_features, aoi, clipped_targets)
+    clipped_count = int(arcpy.management.GetCount(clipped_targets)[0])
+    if clipped_count == 0:
+        arcpy.management.Delete(clipped_targets)
+        raise arcpy.ExecuteError(
+            "No supplied target features intersect the Area of Interest."
+        )
+    messages.addMessage(
+        f"Using {clipped_count:,} target feature(s) within the Area of Interest."
+    )
+    return clipped_targets
 
 
 def _extract_target_features(
