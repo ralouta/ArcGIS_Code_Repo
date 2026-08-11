@@ -98,6 +98,19 @@ FEATURE_PROFILES = {
         "regularize": False,
     },
 }
+DEFAULT_WORKFLOWS = {
+    "Debris": "Embedding Similarity",
+    "Vehicles": "Damage Assessment",
+}
+FEATURE_WORKFLOWS = {
+    "Debris": ("Feature Extraction", "Embedding Similarity"),
+    "Custom": (
+        "Feature Extraction",
+        "Embedding Similarity",
+        "Damage Assessment",
+    ),
+    "Vehicles": ("Damage Assessment",),
+}
 _WAYBACK_RELEASES = None
 NO_MATCH_EVIDENCE = "No Matching Damage Evidence"
 LOW_EVIDENCE = "Low Damage Evidence"
@@ -149,13 +162,14 @@ class AutomatedDamageAssessment(object):
     OUT_SIMILAR = 24
     KEEP_INTERMEDIATE = 25
     EXISTING_EMBEDDINGS = 26
+    WORKFLOW = 27
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
         self.description = (
-            "Extracts target features from pre-event imagery when needed, generates "
-            "deep-learning embeddings from post-event imagery, finds areas similar to "
-            "user-marked damage examples, and classifies target features by overlap."
+            "Extracts target features, finds post-event imagery features similar to "
+            "user-marked examples, or assesses damage by comparing pre-event targets "
+            "with post-event similarity results."
         )
         self.canRunInBackground = False
         self.environments = ["extent"]
@@ -186,6 +200,22 @@ class AutomatedDamageAssessment(object):
         feature_type.value = "Buildings"
         feature_type.category = "1. Target Features"
 
+        workflow = arcpy.Parameter(
+            displayName="Workflow",
+            name="workflow",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+        )
+        workflow.filter.type = "ValueList"
+        workflow.filter.list = [
+            "Feature Extraction",
+            "Embedding Similarity",
+            "Damage Assessment",
+        ]
+        workflow.value = "Damage Assessment"
+        workflow.category = "1. Target Features"
+
         aoi = arcpy.Parameter(
             displayName=(
                 "Area of Interest Polygon (Optional; Clips Supplied Targets and "
@@ -200,7 +230,7 @@ class AutomatedDamageAssessment(object):
         aoi.category = "1. Target Features"
 
         pre_source = arcpy.Parameter(
-            displayName="Pre-Event Imagery Source",
+            displayName="Feature Extraction Imagery Source",
             name="pre_event_source",
             datatype="GPString",
             parameterType="Required",
@@ -209,10 +239,10 @@ class AutomatedDamageAssessment(object):
         pre_source.filter.type = "ValueList"
         pre_source.filter.list = ["Input Imagery", "World Imagery Wayback"]
         pre_source.value = "Input Imagery"
-        pre_source.category = "2. Pre-Event Feature Extraction"
+        pre_source.category = "2. Feature Extraction"
 
         pre_image = arcpy.Parameter(
-            displayName="Pre-Event Imagery Layer (from Active Map)",
+            displayName="Feature Extraction Imagery Layer (from Active Map)",
             name="in_pre_event_imagery",
             datatype="GPString",
             parameterType="Optional",
@@ -220,10 +250,10 @@ class AutomatedDamageAssessment(object):
         )
         pre_image.filter.type = "ValueList"
         pre_image.filter.list = _get_active_map_raster_layer_names()
-        pre_image.category = "2. Pre-Event Feature Extraction"
+        pre_image.category = "2. Feature Extraction"
 
         pre_wayback = arcpy.Parameter(
-            displayName="Pre-Event World Imagery Wayback Release",
+            displayName="Feature Extraction World Imagery Wayback Release",
             name="pre_event_wayback_release",
             datatype="GPString",
             parameterType="Optional",
@@ -231,7 +261,7 @@ class AutomatedDamageAssessment(object):
         )
         pre_wayback.filter.type = "ValueList"
         pre_wayback.filter.list = []
-        pre_wayback.category = "2. Pre-Event Feature Extraction"
+        pre_wayback.category = "2. Feature Extraction"
 
         sam_model = arcpy.Parameter(
             displayName="Custom Extraction Model (.dlpk, Optional; Default: Living Atlas SAM3)",
@@ -241,7 +271,7 @@ class AutomatedDamageAssessment(object):
             direction="Input",
         )
         sam_model.filter.list = ["dlpk"]
-        sam_model.category = "2. Pre-Event Feature Extraction"
+        sam_model.category = "2. Feature Extraction"
 
         custom_prompt = arcpy.Parameter(
             displayName="Custom SAM3 Text Prompt",
@@ -250,7 +280,7 @@ class AutomatedDamageAssessment(object):
             parameterType="Optional",
             direction="Input",
         )
-        custom_prompt.category = "2. Pre-Event Feature Extraction"
+        custom_prompt.category = "2. Feature Extraction"
 
         detection_cell_size = arcpy.Parameter(
             displayName="Feature Detection Cell Size",
@@ -260,7 +290,7 @@ class AutomatedDamageAssessment(object):
             direction="Input",
         )
         detection_cell_size.value = FEATURE_PROFILES["Buildings"]["detection_cell_size"]
-        detection_cell_size.category = "2. Pre-Event Feature Extraction"
+        detection_cell_size.category = "2. Feature Extraction"
 
         post_source = arcpy.Parameter(
             displayName="Post-Event Imagery Source",
@@ -301,10 +331,10 @@ class AutomatedDamageAssessment(object):
         post_wayback.category = "3. Post-Event Similarity"
 
         sample_points = arcpy.Parameter(
-            displayName="Damage Example Points (Minimum 6)",
+            displayName="Example Points for Similarity Search (Minimum 6)",
             name="in_damage_sample_points",
             datatype="GPFeatureLayer",
-            parameterType="Required",
+            parameterType="Optional",
             direction="Input",
         )
         sample_points.filter.list = ["Point", "Multipoint"]
@@ -372,7 +402,7 @@ class AutomatedDamageAssessment(object):
         similarity_threshold.category = "3. Post-Event Similarity"
 
         out_classified = arcpy.Parameter(
-            displayName="Output Classified Target Features",
+            displayName="Output Features",
             name="out_classified_features",
             datatype="DEFeatureClass",
             parameterType="Required",
@@ -475,26 +505,60 @@ class AutomatedDamageAssessment(object):
             out_similar,
             keep_intermediate,
             existing_embeddings,
+            workflow,
         ]
 
     def updateParameters(self, parameters):
-        has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
+        feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
+        workflow_options = FEATURE_WORKFLOWS.get(
+            feature_type,
+            ("Damage Assessment",),
+        )
+        workflow = parameters[self.WORKFLOW].valueAsText
+        parameters[self.WORKFLOW].filter.list = list(workflow_options)
+        parameters[self.WORKFLOW].enabled = feature_type in ("Debris", "Custom")
+        if feature_type != self._last_feature_type:
+            profile = FEATURE_PROFILES[feature_type]
+            parameters[self.DETECTION_CELL_SIZE].value = profile["detection_cell_size"]
+            self._last_feature_type = feature_type
+        if workflow not in workflow_options:
+            workflow = DEFAULT_WORKFLOWS.get(feature_type, workflow_options[0])
+            parameters[self.WORKFLOW].value = workflow
+        requires_extraction = workflow in ("Feature Extraction", "Damage Assessment")
+        requires_similarity = workflow in ("Embedding Similarity", "Damage Assessment")
+        has_target_features = (
+            workflow == "Damage Assessment"
+            and bool(parameters[self.IN_TARGET].valueAsText)
+        )
+        extracts_targets_from_post_event = (
+            workflow == "Damage Assessment"
+            and feature_type == "Vehicles"
+            and not has_target_features
+        )
+        requires_pre_event_extraction = (
+            requires_extraction and not extracts_targets_from_post_event
+        )
         has_existing_embeddings = bool(
             parameters[self.EXISTING_EMBEDDINGS].valueAsText
         )
         parameters[self.AOI].enabled = True
+        parameters[self.IN_TARGET].enabled = workflow == "Damage Assessment"
+        parameters[self.EXISTING_EMBEDDINGS].enabled = requires_similarity
         for index in (
             self.PRE_SOURCE,
             self.PRE_IMAGE,
             self.PRE_WAYBACK,
+        ):
+            parameters[index].enabled = requires_pre_event_extraction and not has_target_features
+        for index in (
             self.SAM_MODEL,
             self.CUSTOM_PROMPT,
             self.DETECTION_CELL_SIZE,
         ):
-            parameters[index].enabled = not has_target_features
+            parameters[index].enabled = requires_extraction and not has_target_features
 
         pre_source = parameters[self.PRE_SOURCE].valueAsText or "Input Imagery"
-        if not has_target_features:
+        if requires_pre_event_extraction and not has_target_features:
             parameters[self.PRE_IMAGE].enabled = pre_source == "Input Imagery"
             parameters[self.PRE_WAYBACK].enabled = pre_source == "World Imagery Wayback"
 
@@ -507,21 +571,35 @@ class AutomatedDamageAssessment(object):
             self.BATCH_SIZE,
             self.GRID_SIZE,
         ):
-            parameters[index].enabled = not has_existing_embeddings
+            parameters[index].enabled = requires_similarity and not has_existing_embeddings
         parameters[self.POST_IMAGE].enabled = (
-            not has_existing_embeddings and post_source == "Input Imagery"
+            requires_similarity
+            and not has_existing_embeddings
+            and post_source == "Input Imagery"
         )
         parameters[self.POST_WAYBACK].enabled = (
-            not has_existing_embeddings and post_source == "World Imagery Wayback"
+            requires_similarity
+            and not has_existing_embeddings
+            and post_source == "World Imagery Wayback"
         )
+        parameters[self.SAMPLE_POINTS].enabled = requires_similarity
+        parameters[self.SIMILARITY_THRESHOLD].enabled = requires_similarity
+        for index in (self.MODERATE_THRESHOLD, self.HIGH_THRESHOLD):
+            parameters[index].enabled = workflow == "Damage Assessment"
 
         raster_layer_names = _get_active_map_raster_layer_names()
         parameters[self.PRE_IMAGE].filter.list = raster_layer_names
         parameters[self.POST_IMAGE].filter.list = raster_layer_names
 
         uses_wayback = (
-            (not has_target_features and pre_source == "World Imagery Wayback")
+            (
+                requires_pre_event_extraction
+                and not has_target_features
+                and pre_source == "World Imagery Wayback"
+            )
             or (
+                requires_similarity
+                and
                 not has_existing_embeddings
                 and post_source == "World Imagery Wayback"
             )
@@ -580,28 +658,39 @@ class AutomatedDamageAssessment(object):
             ):
                 parameters[self.POST_WAYBACK].value = None
 
-        feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
         parameters[self.CUSTOM_PROMPT].enabled = (
-            not has_target_features and feature_type == "Custom"
+            requires_extraction
+            and not has_target_features
+            and feature_type == "Custom"
         )
-        if feature_type != self._last_feature_type:
-            profile = FEATURE_PROFILES[feature_type]
-            parameters[self.DETECTION_CELL_SIZE].value = profile["detection_cell_size"]
-            self._last_feature_type = feature_type
         return
 
     def updateMessages(self, parameters):
-        has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
+        workflow = parameters[self.WORKFLOW].valueAsText or "Damage Assessment"
+        requires_extraction = workflow in ("Feature Extraction", "Damage Assessment")
+        requires_similarity = workflow in ("Embedding Similarity", "Damage Assessment")
+        has_target_features = (
+            workflow == "Damage Assessment"
+            and bool(parameters[self.IN_TARGET].valueAsText)
+        )
+        extracts_targets_from_post_event = (
+            workflow == "Damage Assessment"
+            and parameters[self.FEATURE_TYPE].valueAsText == "Vehicles"
+            and not has_target_features
+        )
+        requires_pre_event_extraction = (
+            requires_extraction and not extracts_targets_from_post_event
+        )
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
-        if not has_target_features:
+        if requires_pre_event_extraction and not has_target_features:
             pre_source = parameters[self.PRE_SOURCE].valueAsText
             if pre_source == "Input Imagery" and not parameters[self.PRE_IMAGE].valueAsText:
                 parameters[self.PRE_IMAGE].setErrorMessage(
-                    "Provide pre-event imagery or choose World Imagery Wayback."
+                    "Provide feature-extraction imagery or choose World Imagery Wayback."
                 )
             if pre_source == "World Imagery Wayback" and not parameters[self.PRE_WAYBACK].valueAsText:
                 parameters[self.PRE_WAYBACK].setErrorMessage(
-                    "Choose a pre-event Wayback release."
+                    "Choose a feature-extraction Wayback release."
                 )
             if (
                 parameters[self.FEATURE_TYPE].valueAsText == "Custom"
@@ -612,7 +701,14 @@ class AutomatedDamageAssessment(object):
                 )
 
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
+        if extracts_targets_from_post_event and post_source != "Input Imagery":
+            parameters[self.POST_SOURCE].setErrorMessage(
+                "Vehicle damage assessment requires an input post-event imagery layer "
+                "for vehicle extraction."
+            )
         if (
+            requires_similarity
+            and
             not existing_embeddings
             and post_source == "Input Imagery"
             and not parameters[self.POST_IMAGE].valueAsText
@@ -621,11 +717,15 @@ class AutomatedDamageAssessment(object):
                 "Provide post-event imagery or choose World Imagery Wayback."
             )
         if (
+            requires_similarity
+            and
             not existing_embeddings
             and post_source == "World Imagery Wayback"
             and not parameters[self.POST_WAYBACK].valueAsText
         ):
             pre_wayback_selected = (
+                requires_pre_event_extraction
+                and
                 not has_target_features
                 and pre_source == "World Imagery Wayback"
                 and parameters[self.PRE_WAYBACK].valueAsText
@@ -647,6 +747,8 @@ class AutomatedDamageAssessment(object):
                 "release(s) with local imagery changes at the analysis-area center."
             )
             if (
+                requires_extraction
+                and
                 not has_target_features
                 and pre_source == "World Imagery Wayback"
                 and parameters[self.PRE_WAYBACK].valueAsText
@@ -658,37 +760,56 @@ class AutomatedDamageAssessment(object):
             ):
                 parameters[self.POST_WAYBACK].setWarningMessage(filter_message)
 
-        if not has_target_features:
+        if requires_extraction and not has_target_features:
             _set_positive_error(
                 parameters[self.DETECTION_CELL_SIZE], "Detection cell size"
             )
         grid_size = parameters[self.GRID_SIZE].value
-        if not existing_embeddings and grid_size is not None and int(grid_size) < 1:
+        if (
+            requires_similarity
+            and not existing_embeddings
+            and grid_size is not None
+            and int(grid_size) < 1
+        ):
             parameters[self.GRID_SIZE].setErrorMessage(
                 "Grid size must be a positive integer or left blank for Auto."
             )
 
         similarity = parameters[self.SIMILARITY_THRESHOLD].value
-        if similarity is not None and not 0 < float(similarity) <= 1:
+        if requires_similarity and similarity is not None and not 0 < float(similarity) <= 1:
             parameters[self.SIMILARITY_THRESHOLD].setErrorMessage(
                 "Similarity threshold must be greater than 0 and at most 1."
             )
 
         batch_size = parameters[self.BATCH_SIZE].value
-        if not existing_embeddings and batch_size is not None and int(batch_size) < 1:
+        if (
+            requires_similarity
+            and not existing_embeddings
+            and batch_size is not None
+            and int(batch_size) < 1
+        ):
             parameters[self.BATCH_SIZE].setErrorMessage("Batch size must be at least 1.")
-        elif not existing_embeddings and batch_size is not None and int(batch_size) > 8:
+        elif (
+            requires_similarity
+            and not existing_embeddings
+            and batch_size is not None
+            and int(batch_size) > 8
+        ):
             parameters[self.BATCH_SIZE].setWarningMessage(
                 "Batch sizes above 8 can exhaust GPU memory; start with 4."
             )
 
-        if existing_embeddings and not _has_embedding_field(existing_embeddings):
+        if requires_similarity and existing_embeddings and not _has_embedding_field(existing_embeddings):
             parameters[self.EXISTING_EMBEDDINGS].setErrorMessage(
                 "Existing post-event embeddings must contain a BLOB embedding field."
             )
 
         sample_parameter = parameters[self.SAMPLE_POINTS]
-        if sample_parameter.value:
+        if requires_similarity and not sample_parameter.valueAsText:
+            sample_parameter.setErrorMessage(
+                "Provide at least 6 example point features for similarity search."
+            )
+        elif requires_similarity and sample_parameter.value:
             try:
                 sample_count = int(
                     arcpy.management.GetCount(sample_parameter.value)[0]
@@ -706,16 +827,17 @@ class AutomatedDamageAssessment(object):
                     f"the selected layer contains {sample_count}."
                 )
 
-        _validate_coverage_parameters(
-            parameters[self.MODERATE_THRESHOLD], parameters[self.HIGH_THRESHOLD]
-        )
+        if workflow == "Damage Assessment":
+            _validate_coverage_parameters(
+                parameters[self.MODERATE_THRESHOLD], parameters[self.HIGH_THRESHOLD]
+            )
         output_path = parameters[self.OUT_CLASSIFIED].valueAsText
         if output_path and (
             _same_dataset(output_path, parameters[self.IN_TARGET].valueAsText)
             or _same_dataset(output_path, existing_embeddings)
         ):
             parameters[self.OUT_CLASSIFIED].setErrorMessage(
-                "The classified output must differ from target features and existing "
+                "Output Features must differ from target features and existing "
                 "post-event embeddings."
             )
         elif output_path and not _geodatabase_workspace(output_path):
@@ -728,24 +850,57 @@ class AutomatedDamageAssessment(object):
             and arcpy.Exists(output_path)
         ):
             parameters[self.OUT_CLASSIFIED].setWarningMessage(
-                "The existing classified output will be replaced after similarity "
+                "The existing output will be replaced after similarity "
                 "analysis succeeds."
             )
         return
 
     def execute(self, parameters, messages):
-        in_target = parameters[self.IN_TARGET].valueAsText
+        workflow = parameters[self.WORKFLOW].valueAsText or "Damage Assessment"
         feature_type = parameters[self.FEATURE_TYPE].valueAsText
+        allowed_workflows = FEATURE_WORKFLOWS.get(
+            feature_type,
+            ("Damage Assessment",),
+        )
+        if workflow not in allowed_workflows:
+            raise arcpy.ExecuteError(
+                f"{workflow} is not available for {feature_type}. Choose one of: "
+                f"{', '.join(allowed_workflows)}."
+            )
+        requires_extraction = workflow in ("Feature Extraction", "Damage Assessment")
+        requires_similarity = workflow in ("Embedding Similarity", "Damage Assessment")
+        in_target = parameters[self.IN_TARGET].valueAsText
+        extracts_targets_from_post_event = (
+            workflow == "Damage Assessment"
+            and feature_type == "Vehicles"
+            and not in_target
+        )
+        requires_pre_event_extraction = (
+            requires_extraction and not extracts_targets_from_post_event
+        )
         aoi = parameters[self.AOI].valueAsText
         pre_source = parameters[self.PRE_SOURCE].valueAsText or "Input Imagery"
-        pre_image = _resolve_active_map_raster_layer(parameters[self.PRE_IMAGE].valueAsText)
+        pre_image = None
+        if requires_pre_event_extraction and pre_source == "Input Imagery":
+            pre_image = _resolve_active_map_raster_layer(
+                parameters[self.PRE_IMAGE].valueAsText
+            )
         pre_wayback_release = parameters[self.PRE_WAYBACK].valueAsText
         sam_model = parameters[self.SAM_MODEL].valueAsText
         custom_prompt = parameters[self.CUSTOM_PROMPT].valueAsText
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
+        if extracts_targets_from_post_event and post_source != "Input Imagery":
+            raise arcpy.ExecuteError(
+                "Vehicle damage assessment requires an input post-event imagery layer "
+                "for vehicle extraction."
+            )
         post_image = None
-        if not existing_embeddings and post_source == "Input Imagery":
+        if (
+            requires_similarity
+            and not existing_embeddings
+            and post_source == "Input Imagery"
+        ):
             post_image = _resolve_active_map_raster_layer(
                 parameters[self.POST_IMAGE].valueAsText
             )
@@ -768,23 +923,23 @@ class AutomatedDamageAssessment(object):
         output_workspace = _geodatabase_workspace(out_classified)
         if not output_workspace:
             raise arcpy.ExecuteError(
-                "Output Classified Target Features must be stored in a file or "
+                "Output Features must be stored in a file or "
                 "enterprise geodatabase."
             )
         if _same_dataset(out_classified, in_target) or _same_dataset(
             out_classified, existing_embeddings
         ):
             raise arcpy.ExecuteError(
-                "The classified output must differ from target features and existing "
+                "Output Features must differ from target features and existing "
                 "post-event embeddings."
             )
         scratch_workspace = arcpy.env.scratchGDB
         messages.addMessage(f"Automated Damage Assessment version {TOOL_VERSION}")
         messages.addMessage(f"Feature type: {feature_type}")
-        if not in_target or not existing_embeddings:
+        if requires_extraction or (requires_similarity and not existing_embeddings):
             _validate_gpu_memory(gpu_id, messages)
 
-        target_features = in_target
+        target_features = in_target if workflow == "Damage Assessment" else None
         generated_target_features = None
         generated_embeddings = None
         out_embeddings = None
@@ -793,7 +948,7 @@ class AutomatedDamageAssessment(object):
         post_event_cache = None
         pre_wayback_metadata = None
         post_wayback_metadata = None
-        if target_features:
+        if requires_extraction and target_features:
             messages.addMessage("Using user-supplied target features; pre-event extraction is skipped.")
             analysis_extent, analysis_spatial_reference, extent_source = (
                 _resolve_analysis_extent(aoi, target_features, False)
@@ -807,13 +962,21 @@ class AutomatedDamageAssessment(object):
                     messages,
                 )
                 generated_target_features = target_features
-        else:
+        elif requires_extraction:
             detection_cell_size = float(
                 parameters[self.DETECTION_CELL_SIZE].value
                 or FEATURE_PROFILES[feature_type]["detection_cell_size"]
             )
-            source_imagery = pre_image
-            if pre_source == "World Imagery Wayback":
+            source_imagery = post_image if extracts_targets_from_post_event else pre_image
+            if extracts_targets_from_post_event:
+                source_imagery = _ensure_web_mercator_raster(
+                    source_imagery, "Post-event imagery", messages
+                )
+                analysis_extent, analysis_spatial_reference, extent_source = (
+                    _resolve_analysis_extent(aoi, source_imagery, True)
+                )
+                post_image = source_imagery
+            elif pre_source == "World Imagery Wayback":
                 analysis_extent, analysis_spatial_reference, extent_source = (
                     _resolve_analysis_extent(aoi, None, True)
                 )
@@ -824,7 +987,7 @@ class AutomatedDamageAssessment(object):
                 analysis_extent, analysis_spatial_reference, extent_source = (
                     _resolve_analysis_extent(aoi, source_imagery, True)
                 )
-            if pre_source == "World Imagery Wayback":
+            if not extracts_targets_from_post_event and pre_source == "World Imagery Wayback":
                 pre_wayback_metadata = _validate_wayback_coverage(
                     pre_wayback_release,
                     analysis_extent,
@@ -866,7 +1029,37 @@ class AutomatedDamageAssessment(object):
             )
             generated_target_features = target_features
 
-        if not existing_embeddings:
+        if workflow == "Feature Extraction":
+            if arcpy.Exists(out_classified):
+                messages.addMessage("Replacing the existing extracted feature output...")
+                arcpy.management.Delete(out_classified)
+            arcpy.management.CopyFeatures(target_features, out_classified)
+            parameters[self.OUT_TARGET].value = out_classified
+            parameters[self.OUT_CLASSIFIED].value = out_classified
+            if not keep_intermediate:
+                for dataset in (generated_target_features, *generated_wayback_rasters):
+                    if dataset and arcpy.Exists(dataset):
+                        arcpy.management.Delete(dataset)
+            return
+
+        if not requires_extraction:
+            if existing_embeddings:
+                analysis_extent = None
+                analysis_spatial_reference = None
+                extent_source = "Existing post-event embeddings"
+            elif post_source == "World Imagery Wayback":
+                analysis_extent, analysis_spatial_reference, extent_source = (
+                    _resolve_analysis_extent(aoi, None, True)
+                )
+            else:
+                post_image = _ensure_web_mercator_raster(
+                    post_image, "Post-event imagery", messages
+                )
+                analysis_extent, analysis_spatial_reference, extent_source = (
+                    _resolve_analysis_extent(aoi, post_image, True)
+                )
+
+        if requires_similarity and not existing_embeddings:
             (
                 post_image,
                 post_event_cache,
@@ -891,14 +1084,17 @@ class AutomatedDamageAssessment(object):
                 "local imagery over the analysis area. Choose another release if you "
                 "need imagery from a different acquisition."
             )
-        parameters[self.OUT_TARGET].value = target_features
-        query_features = _select_damage_queries(
-            target_features,
-            sample_points,
-            feature_type,
-            scratch_workspace,
-            messages,
-        )
+        if target_features:
+            parameters[self.OUT_TARGET].value = target_features
+        query_features = None
+        if workflow == "Damage Assessment":
+            query_features = _select_damage_queries(
+                target_features,
+                sample_points,
+                feature_type,
+                scratch_workspace,
+                messages,
+            )
         run_succeeded = False
 
         try:
@@ -915,7 +1111,7 @@ class AutomatedDamageAssessment(object):
                 )
             else:
                 grid_size = requested_grid_size or _recommend_grid_size(
-                    target_features, post_image
+                    target_features or sample_points, post_image
                 )
                 grid_source = (
                     "user supplied" if requested_grid_size else "Auto recommendation"
@@ -931,7 +1127,7 @@ class AutomatedDamageAssessment(object):
                     messages,
                 )
                 output_spatial_reference = arcpy.Describe(
-                    target_features
+                    target_features or post_image
                 ).spatialReference
                 if post_event_cache is None:
                     post_image, post_event_cache = _materialize_image_service_if_needed(
@@ -966,6 +1162,11 @@ class AutomatedDamageAssessment(object):
                 )
             parameters[self.OUT_EMBEDDINGS].value = out_embeddings
 
+            if workflow == "Embedding Similarity":
+                query_features = _select_embedding_queries(
+                    out_embeddings, sample_points, scratch_workspace, messages
+                )
+
             out_similar = arcpy.CreateUniqueName(
                 "Damage_Similar_Embeddings", output_workspace
             )
@@ -979,23 +1180,26 @@ class AutomatedDamageAssessment(object):
             parameters[self.OUT_SIMILAR].value = out_similar
 
             if arcpy.Exists(out_classified):
-                messages.addMessage("Replacing the existing classified output...")
+                messages.addMessage("Replacing the existing output...")
                 arcpy.management.Delete(out_classified)
 
-            _run_damage_classification(
-                target_features,
-                out_similar,
-                out_classified,
-                moderate_threshold,
-                high_threshold,
-                "INTERSECT",
-                None,
-                messages,
-            )
+            if workflow == "Damage Assessment":
+                _run_damage_classification(
+                    target_features,
+                    out_similar,
+                    out_classified,
+                    moderate_threshold,
+                    high_threshold,
+                    "INTERSECT",
+                    None,
+                    messages,
+                )
+            else:
+                arcpy.management.CopyFeatures(out_similar, out_classified)
             parameters[self.OUT_CLASSIFIED].value = out_classified
             run_succeeded = True
         finally:
-            if arcpy.Exists(query_features):
+            if query_features and arcpy.Exists(query_features):
                 arcpy.management.Delete(query_features)
             if post_event_cache and run_succeeded:
                 _delete_image_service_cache(post_event_cache["cache_root"])
@@ -2113,17 +2317,17 @@ def _project_extent(extent, source_spatial_reference, target_spatial_reference):
 
 def _ensure_web_mercator_raster(raster, label, messages):
     spatial_reference = getattr(arcpy.Describe(raster), "spatialReference", None)
+    if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
+        raise arcpy.ExecuteError(
+            f"{label} must have a defined coordinate system before it can be processed."
+        )
     wkid = (
         getattr(spatial_reference, "factoryCode", 0)
         or getattr(spatial_reference, "latestWkid", 0)
         or 0
     )
-    if wkid in WEB_MERCATOR_WKIDS:
+    if wkid in WEB_MERCATOR_WKIDS or getattr(spatial_reference, "type", "") == "Projected":
         return raster
-    if not spatial_reference or getattr(spatial_reference, "name", "Unknown") == "Unknown":
-        raise arcpy.ExecuteError(
-            f"{label} must have a defined coordinate system before it can be reprojected."
-        )
 
     messages.addMessage(
         f"Applying the Reproject raster function to {label.lower()}: "
@@ -2996,6 +3200,7 @@ def _extract_target_features(
 ):
     raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
+    raster_layer = arcpy.CreateUniqueName("sam3_input_raster")
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
         f"Damage_{safe_feature_type}", output_workspace
@@ -3004,6 +3209,7 @@ def _extract_target_features(
 
     try:
         messages.addMessage(f"Detecting {feature_type.lower()} with SAM3...")
+        arcpy.management.MakeRasterLayer(source_imagery, raster_layer)
         with arcpy.EnvManager(
             gpuId=gpu_id,
             extent=analysis_extent,
@@ -3012,7 +3218,7 @@ def _extract_target_features(
             outputCoordinateSystem=spatial_reference,
         ):
             arcpy.ia.DetectObjectsUsingDeepLearning(
-                in_raster=source_imagery,
+                in_raster=raster_layer,
                 out_detected_objects=raw_features,
                 in_model_definition=sam_model,
                 arguments=(
@@ -3053,7 +3259,7 @@ def _extract_target_features(
         else:
             arcpy.management.CopyFeatures(nms_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features):
+        for dataset in (raw_features, nms_features, raster_layer):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
@@ -3166,6 +3372,36 @@ def _select_damage_queries(
         if arcpy.Exists(target_layer):
             arcpy.management.Delete(target_layer)
     return query_features
+
+
+def _select_embedding_queries(
+    embedding_features, sample_points, scratch_workspace, messages
+):
+    embedding_layer = arcpy.CreateUniqueName("embedding_query_selection")
+    query_features = arcpy.CreateUniqueName("embedding_queries", scratch_workspace)
+    try:
+        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
+        arcpy.management.SelectLayerByLocation(
+            embedding_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
+        )
+        selected_count = int(arcpy.management.GetCount(embedding_layer)[0])
+        if selected_count < 6:
+            raise arcpy.ExecuteError(
+                "Example points must intersect at least 6 unique embedding cells; "
+                f"{selected_count} cell(s) were selected."
+            )
+        arcpy.management.CopyFeatures(embedding_layer, query_features)
+        messages.addMessage(
+            f"Using {selected_count} embedding cell(s) as similarity examples."
+        )
+        return query_features
+    except Exception:
+        if arcpy.Exists(query_features):
+            arcpy.management.Delete(query_features)
+        raise
+    finally:
+        if arcpy.Exists(embedding_layer):
+            arcpy.management.Delete(embedding_layer)
 
 
 def _create_road_damage_queries(
