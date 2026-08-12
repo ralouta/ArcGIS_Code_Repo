@@ -433,7 +433,8 @@ class AutomatedFeatureExtraction(object):
                 source, extent, spatial_reference, feature_type,
                 parameters[self.CUSTOM_PROMPT].valueAsText or FEATURE_PROFILES[feature_type]["prompt"],
                 model, detection_cell_size, int(parameters[self.BATCH_SIZE].value or 4),
-                int(parameters[self.GPU_ID].value or 0), output_workspace, arcpy.env.scratchGDB, messages,
+                int(parameters[self.GPU_ID].value or 0), output_workspace, out_features,
+                arcpy.env.scratchGDB, messages,
             )
             generated_target_features = target_features
         if workflow == "Feature Extraction":
@@ -469,7 +470,9 @@ class AutomatedFeatureExtraction(object):
             model = _resolve_model(parameters[self.EMBEDDING_MODEL].valueAsText, selected_model["item_id"], selected_model["file_name"], messages)
             grid_size = int(parameters[self.GRID_SIZE].value or FEATURE_PROFILES[feature_type]["embedding_grid_size"])
             source = _ensure_web_mercator_raster(source, "Similarity analysis imagery", messages)
-            out_embeddings = arcpy.CreateUniqueName("Feature_Embeddings", output_workspace)
+            out_embeddings = arcpy.CreateUniqueName(
+                f"{_output_name_prefix(out_features)}_Embeddings", output_workspace
+            )
             generated_embeddings = out_embeddings
             _generate_embeddings(
                 source, out_embeddings, model, int(parameters[self.BATCH_SIZE].value or 4), grid_size,
@@ -477,7 +480,9 @@ class AutomatedFeatureExtraction(object):
             )
         parameters[self.OUT_EMBEDDINGS].value = out_embeddings
         try:
-            out_similar = arcpy.CreateUniqueName("Similar_Features", output_workspace)
+            out_similar = arcpy.CreateUniqueName(
+                f"{_output_name_prefix(out_features)}_Similar", output_workspace
+            )
             threshold = float(parameters[self.SIMILARITY_THRESHOLD].value or 0.55)
             if workflow == "Feature Classification":
                 _find_classified_similar_features(
@@ -553,6 +558,11 @@ def _numeric_parameter(display_name, name, datatype, category, value=None):
     parameter.value = value
     parameter.category = category
     return parameter
+
+
+def _output_name_prefix(output_features):
+    base_name = os.path.basename(output_features or "AutomatedFeatures")
+    return re.sub("[^A-Za-z0-9_]+", "_", base_name).strip("_") or "AutomatedFeatures"
 
 
 def _usable_field_names(feature_class):
@@ -2435,7 +2445,6 @@ def _generate_embeddings(
         for index, chunk_extent in enumerate(chunk_extents, start=1):
             chunk_output = output_embeddings
             chunk_raster = None
-            embedding_layer = arcpy.CreateUniqueName("embedding_input_raster")
             if use_chunks:
                 chunk_output = os.path.join(
                     chunk_workspace, f"EmbeddingChunk_{index:04d}"
@@ -2482,10 +2491,9 @@ def _generate_embeddings(
                 environment["snapRaster"] = embedding_input
 
             try:
-                arcpy.management.MakeRasterLayer(embedding_input, embedding_layer)
                 with arcpy.EnvManager(**environment):
                     arcpy.geoai.GenerateEmbeddingsUsingAIModels(
-                        in_data=embedding_layer,
+                        in_data=embedding_input,
                         out_embeddings_feature_class=chunk_output,
                         in_model_definition_file=model,
                         arguments=(
@@ -2496,8 +2504,6 @@ def _generate_embeddings(
                     )
             finally:
                 _release_gpu_memory()
-                if arcpy.Exists(embedding_layer):
-                    arcpy.management.Delete(embedding_layer)
                 if use_chunks:
                     del embedding_input
                     _delete_cached_raster(chunk_raster)
@@ -3822,6 +3828,7 @@ def _extract_target_features(
     batch_size,
     gpu_id,
     output_workspace,
+    output_features,
     scratch_workspace,
     messages,
 ):
@@ -3829,7 +3836,7 @@ def _extract_target_features(
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
-        f"Damage_{safe_feature_type}", output_workspace
+        f"{_output_name_prefix(output_features)}_{safe_feature_type}", output_workspace
     )
     cell_size_units = _meters_to_spatial_units(cell_size, spatial_reference)
 
@@ -3864,12 +3871,15 @@ def _extract_target_features(
         messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
 
         messages.addMessage("Applying nonmaximum suppression to extracted features...")
+        messages.addMessage(
+            "Using a conservative 60% overlap threshold so adjacent buildings are retained."
+        )
         arcpy.ia.NonMaximumSuppression(
             in_featureclass=raw_features,
             confidence_score_field="Confidence",
             out_featureclass=nms_features,
             class_value_field="Class",
-            max_overlap_ratio=0.1,
+            max_overlap_ratio=0.6,
         )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
         messages.addMessage(f"SAM3 detections after NMS: {detection_count}")
@@ -3915,6 +3925,7 @@ def _regularize_building_footprints(
     messages,
 ):
     area_field = "REG_AREA"
+    source_id_field = "AFE_SOURCE_ID"
     tolerance_bands = (
         (0, 50, 0.5),
         (50, 200, 1.0),
@@ -3924,10 +3935,16 @@ def _regularize_building_footprints(
         (4500, None, 5.0),
     )
     building_layer = arcpy.CreateUniqueName("building_regularization")
+    fallback_layer = arcpy.CreateUniqueName("building_regularization_fallback")
     regularized_outputs = []
 
     try:
         arcpy.management.AddField(input_features, area_field, "DOUBLE")
+        arcpy.management.AddField(input_features, source_id_field, "LONG")
+        input_oid_field = arcpy.Describe(input_features).OIDFieldName
+        arcpy.management.CalculateField(
+            input_features, source_id_field, f"!{input_oid_field}!", "PYTHON3"
+        )
         arcpy.management.CalculateGeometryAttributes(
             input_features,
             [[area_field, "AREA_GEODESIC"]],
@@ -3964,13 +3981,38 @@ def _regularize_building_footprints(
             )
 
         if not regularized_outputs:
-            raise arcpy.ExecuteError(
-                "No valid building footprints were available for regularization."
+            messages.addWarningMessage(
+                "Building regularization produced no output; retaining the original "
+                "SAM3 detections."
             )
+            arcpy.management.CopyFeatures(input_features, output_features)
+            return
         arcpy.management.Merge(regularized_outputs, output_features)
+        regularized_ids = {
+            source_id
+            for (source_id,) in arcpy.da.SearchCursor(output_features, [source_id_field])
+            if source_id is not None
+        }
+        input_count = int(arcpy.management.GetCount(input_features)[0])
+        if len(regularized_ids) < input_count:
+            arcpy.management.MakeFeatureLayer(input_features, fallback_layer)
+            arcpy.management.SelectLayerByAttribute(
+                fallback_layer,
+                "NEW_SELECTION",
+                f"{source_id_field} NOT IN ({', '.join(map(str, regularized_ids)) or '-1'})",
+            )
+            fallback_count = int(arcpy.management.GetCount(fallback_layer)[0])
+            if fallback_count:
+                messages.addWarningMessage(
+                    f"Retaining {fallback_count} original building footprint(s) that "
+                    "could not be regularized."
+                )
+                arcpy.management.Append(fallback_layer, output_features, "NO_TEST")
+        arcpy.management.DeleteField(output_features, [area_field, source_id_field])
     finally:
-        if arcpy.Exists(building_layer):
-            arcpy.management.Delete(building_layer)
+        for dataset in (building_layer, fallback_layer):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
         for dataset in regularized_outputs:
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
