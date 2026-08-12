@@ -60,41 +60,49 @@ FEATURE_PROFILES = {
     "Buildings": {
         "prompt": "building",
         "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
         "regularize": True,
     },
     "Bridges": {
         "prompt": "bridge",
         "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
         "regularize": False,
     },
     "Roads": {
         "prompt": "road",
         "detection_cell_size": 0.5,
+        "embedding_grid_size": 11,
         "regularize": False,
     },
     "Debris": {
         "prompt": "debris",
         "detection_cell_size": 0.2,
+        "embedding_grid_size": 1,
         "regularize": False,
     },
     "Vehicles": {
         "prompt": "vehicle",
         "detection_cell_size": 0.15,
+        "embedding_grid_size": 1,
         "regularize": False,
     },
     "Trees": {
         "prompt": "tree",
         "detection_cell_size": 0.2,
+        "embedding_grid_size": 9,
         "regularize": False,
     },
     "Utility Poles": {
         "prompt": "utility pole",
         "detection_cell_size": 0.1,
+        "embedding_grid_size": 7,
         "regularize": False,
     },
     "Custom": {
         "prompt": "",
         "detection_cell_size": 0.3,
+        "embedding_grid_size": 7,
         "regularize": False,
     },
 }
@@ -1111,7 +1119,9 @@ class AutomatedDamageAssessment(object):
                 )
             else:
                 grid_size = requested_grid_size or _recommend_grid_size(
-                    target_features or sample_points, post_image
+                    target_features or sample_points,
+                    post_image,
+                    feature_type,
                 )
                 grid_source = (
                     "user supplied" if requested_grid_size else "Auto recommendation"
@@ -1192,6 +1202,13 @@ class AutomatedDamageAssessment(object):
                     high_threshold,
                     "INTERSECT",
                     None,
+                    messages,
+                )
+            elif feature_type == "Debris":
+                _create_debris_clusters(
+                    out_similar,
+                    out_classified,
+                    scratch_workspace,
                     messages,
                 )
             else:
@@ -3474,7 +3491,8 @@ def _create_road_damage_queries(
             arcpy.management.Delete(sample_layer)
 
 
-def _recommend_grid_size(target_features, post_image):
+def _recommend_grid_size(target_features, post_image, feature_type):
+    profile_grid_size = FEATURE_PROFILES[feature_type]["embedding_grid_size"]
     spatial_reference = arcpy.Describe(target_features).spatialReference
     meters_per_unit = spatial_reference.metersPerUnit
     _meters_to_spatial_units(1.0, spatial_reference)
@@ -3497,14 +3515,116 @@ def _recommend_grid_size(target_features, post_image):
     )
     image_meters_per_unit = getattr(image_spatial_reference, "metersPerUnit", None)
     if not widths or not image_cell_size or not image_meters_per_unit:
-        return 5
+        return profile_grid_size
     median_width = statistics.median(widths)
     image_cell_size_meters = image_cell_size * image_meters_per_unit
     estimated_size = int(round((1.5 * median_width) / (16.0 * image_cell_size_meters)))
-    estimated_size = max(3, min(11, estimated_size))
-    if estimated_size % 2 == 0:
-        estimated_size += 1 if estimated_size < 11 else -1
-    return estimated_size
+    return max(profile_grid_size, min(11, estimated_size))
+
+
+def _create_debris_clusters(
+    similar_features,
+    output_features,
+    scratch_workspace,
+    messages,
+):
+    aggregated_features = arcpy.CreateUniqueName(
+        "debris_similarity_aggregated", scratch_workspace
+    )
+    coverage_features = arcpy.CreateUniqueName(
+        "debris_similarity_coverage", scratch_workspace
+    )
+    smoothed_features = arcpy.CreateUniqueName(
+        "debris_similarity_smoothed", scratch_workspace
+    )
+    clustered_features = arcpy.CreateUniqueName(
+        "debris_similarity_clusters", scratch_workspace
+    )
+    cluster_layer = arcpy.CreateUniqueName("debris_similarity_cluster_selection")
+
+    try:
+        aggregation_distance, minimum_hole_area = _debris_coverage_tolerance(
+            similar_features
+        )
+        messages.addMessage(
+            "Consolidating nearby debris similarity cells into coverage polygons..."
+        )
+        arcpy.cartography.AggregatePolygons(
+            in_features=similar_features,
+            out_feature_class=aggregated_features,
+            aggregation_distance=aggregation_distance,
+            minimum_area=0,
+            minimum_hole_size=minimum_hole_area,
+            orthogonality_option="NON_ORTHOGONAL",
+        )
+        arcpy.management.EliminatePolygonPart(
+            aggregated_features,
+            coverage_features,
+            "AREA",
+            minimum_hole_area,
+            "0",
+            "CONTAINED_ONLY",
+        )
+        arcpy.cartography.SmoothPolygon(
+            in_features=coverage_features,
+            out_feature_class=smoothed_features,
+            algorithm="PAEK",
+            tolerance=aggregation_distance,
+            endpoint_option="FIXED_ENDPOINT",
+            error_option="RESOLVE_ERRORS",
+        )
+        arcpy.analysis.SpatialJoin(
+            target_features=smoothed_features,
+            join_features=similar_features,
+            out_feature_class=clustered_features,
+            join_operation="JOIN_ONE_TO_ONE",
+            join_type="KEEP_COMMON",
+            match_option="INTERSECT",
+        )
+        arcpy.management.MakeFeatureLayer(clustered_features, cluster_layer)
+        arcpy.management.SelectLayerByAttribute(
+            cluster_layer,
+            "NEW_SELECTION",
+            "Join_Count >= 2",
+        )
+        cluster_count = int(arcpy.management.GetCount(cluster_layer)[0])
+        arcpy.management.CopyFeatures(cluster_layer, output_features)
+        messages.addMessage(
+            f"Created {cluster_count:,} debris polygon cluster(s) from matching "
+            "embedding cells; isolated cells were excluded."
+        )
+    finally:
+        for dataset in (
+            aggregated_features,
+            coverage_features,
+            smoothed_features,
+            clustered_features,
+            cluster_layer,
+        ):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+
+
+def _debris_coverage_tolerance(similar_features):
+    cell_widths = []
+    cell_areas = []
+    with arcpy.da.SearchCursor(similar_features, ["SHAPE@"]) as cursor:
+        for index, (geometry,) in enumerate(cursor):
+            if geometry and geometry.pointCount > 0:
+                extent = geometry.extent
+                cell_width = max(extent.width, extent.height)
+                cell_area = geometry.area
+                if cell_width > 0 and cell_area > 0:
+                    cell_widths.append(cell_width)
+                    cell_areas.append(cell_area)
+            if index >= 4999:
+                break
+    if not cell_widths or not cell_areas:
+        raise arcpy.ExecuteError(
+            "Similar debris embedding features must contain valid polygon cells."
+        )
+    cell_width = statistics.median(cell_widths)
+    return cell_width * 1.5, statistics.median(cell_areas) * 3.0
 
 
 def _run_damage_classification(

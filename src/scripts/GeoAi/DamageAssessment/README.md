@@ -6,7 +6,17 @@ When imported with ArcPy, the toolbox alias is `automateddamageassessment`.
 
 The standalone **Classify Building Damage from Similar Embeddings** tool remains under `QAQC/BuildingDamageAssessment` for reruns with existing inputs.
 
-## Automated workflow
+## Workflows
+
+Choose one workflow based on the question being answered:
+
+1. **Feature Extraction** runs SAM3 against the feature-extraction imagery and writes the detected target features. It does not generate embeddings, require example points, or assign damage classes. For damage assessment, this imagery is normally pre-event; for standalone detection, it is simply the imagery to analyze.
+2. **Embedding Similarity** generates embeddings from post-event imagery, selects the embedding cells intersecting at least six example points, and writes the similar features. For debris, nearby matching cells are consolidated into coverage polygons, small interior gaps are filled, boundaries are smoothed with topology errors resolved, and isolated cells are excluded from the final output. It does not use pre-event imagery or damage coverage classification.
+3. **Damage Assessment** extracts or accepts target features, generates post-event embeddings, finds examples similar to damage points, and classifies each target by overlap. Buildings use pre-event targets; vehicles can be extracted from the post-event image before classification.
+
+The Workflow menu is available for Debris and Custom feature types. Other feature types use their fixed damage-assessment workflow. A selected workflow remains selected while other tool parameters refresh. In debris embedding-similarity mode, only one analysis image is used. Leave **Keep Intermediate Data** enabled to retain the raw matching embedding cells for review alongside the consolidated debris polygon output.
+
+## Damage assessment workflow
 
 1. Use supplied target polygons, or extract targets from pre-event imagery with SAM3.
 2. Run nonmaximum suppression on SAM3 results and regularize building footprints with area-scaled tolerances, including finer tolerances for small buildings.
@@ -32,7 +42,7 @@ Choose an embedding package from the **ArcGIS Online Embedding Model** dropdown.
 - Target features and area of interest in a projected coordinate system
 - Classified output stored in a file or enterprise geodatabase
 
-Input imagery with another defined coordinate system is opened from its underlying raster or mosaic dataset, wrapped in the virtual **Reproject** raster function, and processed as WGS 1984 Web Mercator (Auxiliary Sphere). The source raster is not rewritten.
+Input imagery in a projected coordinate system is used directly. Geographic imagery is opened from its underlying raster or mosaic dataset, wrapped in the virtual **Reproject** raster function, and processed as WGS 1984 Web Mercator (Auxiliary Sphere). The source raster is not rewritten.
 
 When the post-event input is an image service and the analysis extent exceeds a safe 4,000-pixel request in either dimension, the tool exports native-resolution 4,000-by-4,000 TIFF tiles. It processes the cached TIFFs as aligned embedding chunks of at most approximately 20,000 by 20,000 source pixels. For each chunk, only intersecting TIFFs are assembled into a temporary physical raster before GeoAI processing. Completed embedding chunks are assembled with one direct geodatabase merge before similarity analysis, avoiding the extra disk space required by staged merge intermediates. This also avoids oversized image-service requests and a single city-scale raster worker reaching ArcGIS Pro's internal parallel-job timeout.
 
@@ -50,7 +60,7 @@ Tile level selection respects the locally reported source resolution and always 
 
 For feature extraction, either provide an **Area of Interest Polygon** or open the tool's **Environments** settings and set **Extent** to Current Display Extent, a map layer, or specified coordinates. An AOI polygon takes precedence when both are supplied. When supplied target features extend beyond available imagery, provide an AOI to clip them to the analysis boundary; embedding generation, similarity analysis, and the final classified output then use only the clipped targets. The clipped target feature class is retained or removed according to **Keep Intermediate Data**, while the original target dataset is never modified. With existing target features and neither an AOI nor an Extent environment set, their full extent is used. The Extent environment limits imagery processing but does not clip supplied target geometry; use an AOI when the final output must be restricted to the imagery footprint.
 
-Feature-specific detection cell sizes are starting profiles and remain editable. Leave **Embedding Grid Size** blank to automatically estimate an odd grid size from the median target width and post-event image resolution, or provide a tested positive value such as `5`.
+Feature-specific detection cell sizes are starting profiles and remain editable. Leave **Embedding Grid Size** blank to automatically estimate a feature-specific grid size from the median target width and post-event image resolution, or provide a tested positive value such as `1` for the finest vehicle or debris grid. A supplied value always overrides the automatic recommendation.
 
 Built-in extraction profiles are available for buildings, bridges, roads, debris, vehicles, trees, and utility poles. Choose **Custom** to supply another SAM3 text prompt.
 
