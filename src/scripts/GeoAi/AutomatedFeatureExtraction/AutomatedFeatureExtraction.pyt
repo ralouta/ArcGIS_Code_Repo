@@ -145,35 +145,37 @@ class Toolbox(object):
 class AutomatedFeatureExtraction(object):
     FEATURE_TYPE = 0
     WORKFLOW = 1
-    AOI = 2
-    EXTRACTION_SOURCE = 3
-    EXTRACTION_IMAGE = 4
-    EXTRACTION_WAYBACK = 5
-    SAM_MODEL = 6
-    CUSTOM_PROMPT = 7
-    DETECTION_CELL_SIZE = 8
-    ANALYSIS_SOURCE = 9
-    ANALYSIS_IMAGE = 10
-    ANALYSIS_WAYBACK = 11
-    SAMPLE_POINTS = 12
-    CLASS_FIELD = 13
-    ONLINE_EMBEDDING_MODEL = 14
-    EMBEDDING_MODEL = 15
-    GPU_ID = 16
-    BATCH_SIZE = 17
-    GRID_SIZE = 18
-    SIMILARITY_THRESHOLD = 19
-    OUT_FEATURES = 20
-    OUT_EMBEDDINGS = 21
-    OUT_SIMILAR = 22
-    KEEP_INTERMEDIATE = 23
-    EXISTING_EMBEDDINGS = 24
+    IN_TARGET = 2
+    AOI = 3
+    EXTRACTION_SOURCE = 4
+    EXTRACTION_IMAGE = 5
+    EXTRACTION_WAYBACK = 6
+    SAM_MODEL = 7
+    CUSTOM_PROMPT = 8
+    DETECTION_CELL_SIZE = 9
+    ANALYSIS_SOURCE = 10
+    ANALYSIS_IMAGE = 11
+    ANALYSIS_WAYBACK = 12
+    SAMPLE_POINTS = 13
+    CLASS_FIELD = 14
+    ONLINE_EMBEDDING_MODEL = 15
+    EMBEDDING_MODEL = 16
+    GPU_ID = 17
+    BATCH_SIZE = 18
+    GRID_SIZE = 19
+    SIMILARITY_THRESHOLD = 20
+    OUT_FEATURES = 21
+    OUT_EMBEDDINGS = 22
+    OUT_SIMILAR = 23
+    KEEP_INTERMEDIATE = 24
+    EXISTING_EMBEDDINGS = 25
 
     def __init__(self):
         self.label = "Automated Feature Extraction and Classification"
         self.description = (
             "Extracts named feature types with SAM3, finds imagery that resembles "
-            "example points, or labels matching imagery with user-defined classes."
+            "example points, or classifies supplied or extracted target features "
+            "with user-defined classes."
         )
         self.canRunInBackground = False
         self.environments = ["extent"]
@@ -183,69 +185,73 @@ class AutomatedFeatureExtraction(object):
 
     def getParameterInfo(self):
         feature_type = _string_parameter(
-            "Feature Type", "feature_type", "1. Feature Definition", "Buildings",
+            "Feature Type", "feature_type", "Feature Definition", "Buildings",
             list(FEATURE_PROFILES), True,
         )
         workflow = _string_parameter(
-            "Workflow", "workflow", "1. Feature Definition", "Feature Extraction",
-            ("Feature Extraction", "Embedding Similarity", "Classify Similarity"), True,
+            "Workflow", "workflow", "Feature Definition", "Feature Extraction",
+            ("Feature Extraction", "Embedding Similarity", "Feature Classification"), True,
+        )
+        in_target = _feature_parameter(
+            "Input Features to Classify (Optional)", "in_target_features",
+            "Feature Definition", ["Polygon"],
         )
         aoi = _feature_parameter(
             "Area of Interest Polygon (Optional; Overrides Extent)", "in_aoi",
-            "1. Feature Definition", ["Polygon"],
+            "Feature Definition", ["Polygon"],
         )
         extraction_source = _string_parameter(
             "Feature Extraction Imagery Source", "extraction_source",
-            "2. Feature Extraction", "Input Imagery",
+            "Feature Extraction", "Input Imagery",
             ("Input Imagery", "World Imagery Wayback"), True,
         )
         extraction_image = _string_parameter(
             "Feature Extraction Imagery Layer (from Active Map)", "in_extraction_imagery",
-            "2. Feature Extraction", None, _get_active_map_raster_layer_names(),
+            "Feature Extraction", None, _get_active_map_raster_layer_names(),
         )
         extraction_wayback = _string_parameter(
             "Feature Extraction World Imagery Wayback Release", "extraction_wayback_release",
-            "2. Feature Extraction", None, (),
+            "Feature Extraction", None, (),
         )
         sam_model = arcpy.Parameter(
             displayName="Custom Extraction Model (.dlpk, Optional; Default: Living Atlas SAM3)",
             name="in_sam_model", datatype="DEFile", parameterType="Optional", direction="Input",
         )
         sam_model.filter.list = ["dlpk"]
-        sam_model.category = "2. Feature Extraction"
+        sam_model.category = "Feature Extraction"
         custom_prompt = arcpy.Parameter(
             displayName="Custom SAM3 Text Prompt", name="custom_sam_prompt",
             datatype="GPString", parameterType="Optional", direction="Input",
         )
-        custom_prompt.category = "2. Feature Extraction"
+        custom_prompt.category = "Feature Extraction"
         detection_cell_size = arcpy.Parameter(
             displayName="Feature Detection Cell Size", name="detection_cell_size",
             datatype="GPDouble", parameterType="Optional", direction="Input",
         )
         detection_cell_size.value = FEATURE_PROFILES["Buildings"]["detection_cell_size"]
-        detection_cell_size.category = "2. Feature Extraction"
+        detection_cell_size.category = "Feature Extraction"
         analysis_source = _string_parameter(
-            "Similarity Analysis Imagery Source", "analysis_source", "3. Similarity Analysis",
+            "Similarity Analysis Imagery Source", "analysis_source", "Similarity Analysis",
             "Input Imagery", ("Input Imagery", "Current World Imagery", "World Imagery Wayback"), True,
         )
         analysis_image = _string_parameter(
             "Similarity Analysis Imagery Layer (from Active Map)", "in_analysis_imagery",
-            "3. Similarity Analysis", None, _get_active_map_raster_layer_names(),
+            "Similarity Analysis", None, _get_active_map_raster_layer_names(),
         )
         analysis_wayback = _string_parameter(
             "Similarity Analysis World Imagery Wayback Release", "analysis_wayback_release",
-            "3. Similarity Analysis", None, (),
+            "Similarity Analysis", None, (),
         )
         sample_points = _feature_parameter(
-            "Example Points for Similarity Search (Minimum 6 per Class)", "in_example_points",
-            "3. Similarity Analysis", ["Point", "Multipoint"],
+            "Classified Example Points (Minimum 6 per Class)", "in_example_points",
+            "Similarity Analysis", ["Point", "Multipoint"],
         )
         class_field = _string_parameter(
-            "Example Class Field", "example_class_field", "3. Similarity Analysis",
+            "Example Class Field", "example_class_field", "Similarity Analysis",
             None, (),
         )
         online_embedding_model = _string_parameter(
-            "ArcGIS Online Embedding Model", "online_embedding_model", "3. Similarity Analysis",
+            "ArcGIS Online Embedding Model", "online_embedding_model", "Similarity Analysis",
             next(iter(EMBEDDING_MODELS)), list(EMBEDDING_MODELS), True,
         )
         embedding_model = arcpy.Parameter(
@@ -253,38 +259,38 @@ class AutomatedFeatureExtraction(object):
             name="in_embedding_model", datatype="DEFile", parameterType="Optional", direction="Input",
         )
         embedding_model.filter.list = ["dlpk"]
-        embedding_model.category = "3. Similarity Analysis"
-        gpu_id = _numeric_parameter("GPU ID", "gpu_id", "GPLong", "3. Similarity Analysis", 0)
-        batch_size = _numeric_parameter("Batch Size", "batch_size", "GPLong", "3. Similarity Analysis", 4)
-        grid_size = _numeric_parameter("Embedding Grid Size (Optional; Blank = Auto)", "grid_size", "GPLong", "3. Similarity Analysis")
-        similarity_threshold = _numeric_parameter("Similarity Threshold", "similarity_threshold", "GPDouble", "3. Similarity Analysis", 0.55)
+        embedding_model.category = "Similarity Analysis"
+        gpu_id = _numeric_parameter("GPU ID", "gpu_id", "GPLong", "Similarity Analysis", 0)
+        batch_size = _numeric_parameter("Batch Size", "batch_size", "GPLong", "Similarity Analysis", 4)
+        grid_size = _numeric_parameter("Embedding Grid Size (Optional; Blank = Auto)", "grid_size", "GPLong", "Similarity Analysis")
+        similarity_threshold = _numeric_parameter("Similarity Threshold", "similarity_threshold", "GPDouble", "Similarity Analysis", 0.55)
         out_features = arcpy.Parameter(
             displayName="Output Features", name="out_features", datatype="DEFeatureClass",
             parameterType="Required", direction="Output",
         )
-        out_features.category = "4. Outputs"
+        out_features.category = "Outputs"
         out_embeddings = arcpy.Parameter(
             displayName="Embeddings", name="out_embeddings", datatype="DEFeatureClass",
             parameterType="Derived", direction="Output",
         )
-        out_embeddings.category = "4. Outputs"
+        out_embeddings.category = "Outputs"
         out_similar = arcpy.Parameter(
             displayName="Similar Features", name="out_similar_features", datatype="DEFeatureClass",
             parameterType="Derived", direction="Output",
         )
-        out_similar.category = "4. Outputs"
+        out_similar.category = "Outputs"
         keep_intermediate = arcpy.Parameter(
             displayName="Keep Intermediate Data", name="keep_intermediate_data",
             datatype="GPBoolean", parameterType="Optional", direction="Input",
         )
         keep_intermediate.value = True
-        keep_intermediate.category = "4. Outputs"
+        keep_intermediate.category = "Outputs"
         existing_embeddings = _feature_parameter(
             "Existing Embeddings (Optional; Skips Generation)", "in_existing_embeddings",
-            "3. Similarity Analysis", ["Polygon"],
+            "Similarity Analysis", ["Polygon"],
         )
         return [
-            feature_type, workflow, aoi, extraction_source, extraction_image,
+            feature_type, workflow, in_target, aoi, extraction_source, extraction_image,
             extraction_wayback, sam_model, custom_prompt, detection_cell_size,
             analysis_source, analysis_image, analysis_wayback, sample_points,
             class_field, online_embedding_model, embedding_model, gpu_id, batch_size,
@@ -295,8 +301,11 @@ class AutomatedFeatureExtraction(object):
     def updateParameters(self, parameters):
         feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
         workflow = parameters[self.WORKFLOW].valueAsText or "Feature Extraction"
-        requires_extraction = workflow == "Feature Extraction"
-        requires_similarity = workflow in ("Embedding Similarity", "Classify Similarity")
+        has_target_features = bool(parameters[self.IN_TARGET].valueAsText)
+        requires_extraction = workflow == "Feature Extraction" or (
+            workflow == "Feature Classification" and not has_target_features
+        )
+        requires_similarity = workflow in ("Embedding Similarity", "Feature Classification")
         has_existing_embeddings = bool(parameters[self.EXISTING_EMBEDDINGS].valueAsText)
         if feature_type != self._last_feature_type:
             parameters[self.DETECTION_CELL_SIZE].value = FEATURE_PROFILES[feature_type]["detection_cell_size"]
@@ -304,6 +313,7 @@ class AutomatedFeatureExtraction(object):
         for index in (self.EXTRACTION_SOURCE, self.EXTRACTION_IMAGE, self.EXTRACTION_WAYBACK,
                       self.SAM_MODEL, self.DETECTION_CELL_SIZE):
             parameters[index].enabled = requires_extraction
+        parameters[self.IN_TARGET].enabled = workflow == "Feature Classification"
         parameters[self.CUSTOM_PROMPT].enabled = requires_extraction and feature_type == "Custom"
         extraction_source = parameters[self.EXTRACTION_SOURCE].valueAsText or "Input Imagery"
         parameters[self.EXTRACTION_IMAGE].enabled = requires_extraction and extraction_source == "Input Imagery"
@@ -319,7 +329,7 @@ class AutomatedFeatureExtraction(object):
             requires_similarity and not has_existing_embeddings and analysis_source == "World Imagery Wayback"
         )
         parameters[self.SAMPLE_POINTS].enabled = requires_similarity
-        parameters[self.CLASS_FIELD].enabled = workflow == "Classify Similarity"
+        parameters[self.CLASS_FIELD].enabled = workflow == "Feature Classification"
         parameters[self.SIMILARITY_THRESHOLD].enabled = requires_similarity
         parameters[self.EXISTING_EMBEDDINGS].enabled = requires_similarity
         raster_layer_names = _get_active_map_raster_layer_names()
@@ -356,10 +366,14 @@ class AutomatedFeatureExtraction(object):
 
     def updateMessages(self, parameters):
         workflow = parameters[self.WORKFLOW].valueAsText or "Feature Extraction"
-        requires_similarity = workflow in ("Embedding Similarity", "Classify Similarity")
+        requires_similarity = workflow in ("Embedding Similarity", "Feature Classification")
+        requires_extraction = workflow == "Feature Extraction" or (
+            workflow == "Feature Classification"
+            and not parameters[self.IN_TARGET].valueAsText
+        )
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
-        if workflow == "Feature Extraction":
+        if requires_extraction:
             _set_positive_error(parameters[self.DETECTION_CELL_SIZE], "Detection cell size")
         if requires_similarity:
             _set_positive_error(parameters[self.GRID_SIZE], "Grid size")
@@ -372,7 +386,7 @@ class AutomatedFeatureExtraction(object):
                 parameters[self.EXISTING_EMBEDDINGS].setErrorMessage(
                     "Existing embeddings must contain a BLOB embedding field."
                 )
-            if workflow == "Classify Similarity":
+            if workflow == "Feature Classification":
                 _validate_example_class_field(
                     sample_points, parameters[self.CLASS_FIELD].valueAsText,
                     parameters[self.CLASS_FIELD],
@@ -380,9 +394,12 @@ class AutomatedFeatureExtraction(object):
             elif sample_points:
                 _validate_minimum_example_count(sample_points, parameters[self.SAMPLE_POINTS])
         output_path = parameters[self.OUT_FEATURES].valueAsText
-        if output_path and _same_dataset(output_path, existing_embeddings):
+        if output_path and (
+            _same_dataset(output_path, existing_embeddings)
+            or _same_dataset(output_path, parameters[self.IN_TARGET].valueAsText)
+        ):
             parameters[self.OUT_FEATURES].setErrorMessage(
-                "Output Features must differ from existing embeddings."
+                "Output Features must differ from input features and existing embeddings."
             )
         elif output_path and not _geodatabase_workspace(output_path):
             parameters[self.OUT_FEATURES].setErrorMessage(
@@ -399,7 +416,12 @@ class AutomatedFeatureExtraction(object):
             raise arcpy.ExecuteError("Output Features must be stored in a file or enterprise geodatabase.")
         messages.addMessage(f"Automated Feature Extraction and Classification version {TOOL_VERSION}")
         messages.addMessage(f"Workflow: {workflow}; feature type: {feature_type}")
-        if workflow == "Feature Extraction":
+        target_features = parameters[self.IN_TARGET].valueAsText
+        generated_target_features = None
+        requires_extraction = workflow == "Feature Extraction" or (
+            workflow == "Feature Classification" and not target_features
+        )
+        if requires_extraction:
             _validate_gpu_memory(int(parameters[self.GPU_ID].value or 0), messages)
             source = _resolve_extraction_source(parameters, aoi, messages)
             detection_cell_size = float(
@@ -407,21 +429,29 @@ class AutomatedFeatureExtraction(object):
             )
             model = _resolve_model(parameters[self.SAM_MODEL].valueAsText, SAM3_ITEM_ID, "SAM3.dlpk", messages)
             extent, spatial_reference, _ = _resolve_analysis_extent(aoi, source, True)
-            extracted = _extract_target_features(
+            target_features = _extract_target_features(
                 source, extent, spatial_reference, feature_type,
                 parameters[self.CUSTOM_PROMPT].valueAsText or FEATURE_PROFILES[feature_type]["prompt"],
                 model, detection_cell_size, int(parameters[self.BATCH_SIZE].value or 4),
                 int(parameters[self.GPU_ID].value or 0), output_workspace, arcpy.env.scratchGDB, messages,
             )
+            generated_target_features = target_features
+        if workflow == "Feature Extraction":
             if arcpy.Exists(out_features):
                 arcpy.management.Delete(out_features)
-            arcpy.management.CopyFeatures(extracted, out_features)
-            if arcpy.Exists(extracted):
-                arcpy.management.Delete(extracted)
+            arcpy.management.CopyFeatures(target_features, out_features)
+            if generated_target_features and arcpy.Exists(generated_target_features):
+                arcpy.management.Delete(generated_target_features)
             return
-        self._execute_similarity(parameters, messages, workflow, feature_type, aoi, output_workspace, out_features)
+        self._execute_similarity(
+            parameters, messages, workflow, feature_type, aoi, output_workspace,
+            out_features, target_features, generated_target_features,
+        )
 
-    def _execute_similarity(self, parameters, messages, workflow, feature_type, aoi, output_workspace, out_features):
+    def _execute_similarity(
+        self, parameters, messages, workflow, feature_type, aoi, output_workspace,
+        out_features, target_features, generated_target_features,
+    ):
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
         if not sample_points:
@@ -449,7 +479,7 @@ class AutomatedFeatureExtraction(object):
         try:
             out_similar = arcpy.CreateUniqueName("Similar_Features", output_workspace)
             threshold = float(parameters[self.SIMILARITY_THRESHOLD].value or 0.55)
-            if workflow == "Classify Similarity":
+            if workflow == "Feature Classification":
                 _find_classified_similar_features(
                     out_embeddings, sample_points, parameters[self.CLASS_FIELD].valueAsText,
                     out_similar, threshold, arcpy.env.scratchGDB, messages,
@@ -467,10 +497,16 @@ class AutomatedFeatureExtraction(object):
             parameters[self.OUT_SIMILAR].value = out_similar
             if arcpy.Exists(out_features):
                 arcpy.management.Delete(out_features)
-            arcpy.management.CopyFeatures(out_similar, out_features)
+            if workflow == "Feature Classification":
+                _classify_target_features(
+                    target_features, out_similar, out_features, arcpy.env.scratchGDB,
+                    messages,
+                )
+            else:
+                arcpy.management.CopyFeatures(out_similar, out_features)
         finally:
             if not parameters[self.KEEP_INTERMEDIATE].value:
-                for dataset in (out_similar, generated_embeddings):
+                for dataset in (out_similar, generated_embeddings, generated_target_features):
                     if dataset and arcpy.Exists(dataset):
                         arcpy.management.Delete(dataset)
                 parameters[self.OUT_SIMILAR].value = None
@@ -654,8 +690,8 @@ def _find_classified_similar_features(
                     out_embeddings_feature_class=class_output,
                     threshold=threshold,
                 )
-                arcpy.management.AddField(class_output, "AUTO_CLASS", "TEXT", field_length=255)
-                arcpy.management.CalculateField(class_output, "AUTO_CLASS", repr(str(value)), "PYTHON3")
+                arcpy.management.AddField(class_output, "AFE_CLASS", "TEXT", field_length=255)
+                arcpy.management.CalculateField(class_output, "AFE_CLASS", repr(str(value)), "PYTHON3")
                 class_outputs.append(class_output)
             finally:
                 for dataset in (class_samples, query_features):
@@ -668,6 +704,76 @@ def _find_classified_similar_features(
         for dataset in class_outputs:
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
+
+
+def _classify_target_features(
+    target_features, similar_features, output_features, scratch_workspace, messages,
+):
+    target_id_field = "AFE_TARGET_ID"
+    target_area_field = "AFE_AREA_SQM"
+    evidence_area_field = "AFE_EVID_SQM"
+    intersections = arcpy.CreateUniqueName("class_intersections", scratch_workspace)
+    arcpy.management.CopyFeatures(target_features, output_features)
+    existing_fields = {field.name.upper() for field in arcpy.ListFields(output_features)}
+    if target_id_field not in existing_fields:
+        arcpy.management.AddField(output_features, target_id_field, "LONG")
+    if "AUTO_CLASS" not in existing_fields:
+        arcpy.management.AddField(output_features, "AUTO_CLASS", "TEXT", field_length=255)
+    if "CLASS_COV_PCT" not in existing_fields:
+        arcpy.management.AddField(output_features, "CLASS_COV_PCT", "DOUBLE")
+    if target_area_field not in existing_fields:
+        arcpy.management.AddField(output_features, target_area_field, "DOUBLE")
+    oid_field = arcpy.Describe(output_features).OIDFieldName
+    arcpy.management.CalculateField(output_features, target_id_field, f"!{oid_field}!", "PYTHON3")
+    arcpy.management.CalculateGeometryAttributes(
+        output_features, [[target_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+    )
+    evidence_by_target = {}
+    try:
+        arcpy.analysis.PairwiseIntersect(
+            [output_features, similar_features], intersections, "ALL", None, "INPUT"
+        )
+        if int(arcpy.management.GetCount(intersections)[0]):
+            arcpy.management.AddField(intersections, evidence_area_field, "DOUBLE")
+            arcpy.management.CalculateGeometryAttributes(
+                intersections, [[evidence_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+            )
+            with arcpy.da.SearchCursor(
+                intersections, [target_id_field, "AFE_CLASS", evidence_area_field]
+            ) as cursor:
+                for target_id, class_value, evidence_area in cursor:
+                    if target_id is None or not class_value:
+                        continue
+                    target_evidence = evidence_by_target.setdefault(target_id, {})
+                    target_evidence[class_value] = (
+                        target_evidence.get(class_value, 0.0) + (evidence_area or 0.0)
+                    )
+    finally:
+        if arcpy.Exists(intersections):
+            arcpy.management.Delete(intersections)
+
+    classified_count = 0
+    with arcpy.da.UpdateCursor(
+        output_features, [target_id_field, target_area_field, "AUTO_CLASS", "CLASS_COV_PCT"]
+    ) as cursor:
+        for target_id, target_area, class_value, coverage_percent in cursor:
+            class_evidence = evidence_by_target.get(target_id, {})
+            if class_evidence:
+                class_value, evidence_area = max(
+                    class_evidence.items(), key=lambda item: item[1]
+                )
+                coverage_percent = min(
+                    100.0, (evidence_area / target_area) * 100.0
+                ) if target_area else 0.0
+                classified_count += 1
+            else:
+                class_value = "Unclassified"
+                coverage_percent = 0.0
+            cursor.updateRow([target_id, target_area, class_value, coverage_percent])
+    arcpy.management.DeleteField(output_features, [target_id_field, target_area_field])
+    messages.addMessage(
+        f"Classified {classified_count} of {int(arcpy.management.GetCount(output_features)[0])} target feature(s)."
+    )
 
 
 def _sql_literal(value, field_type):

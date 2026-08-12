@@ -13,8 +13,8 @@
   </toolbox>
   <dataIdInfo>
     <idCitation><resTitle>Automated Feature Extraction and Classification</resTitle></idCitation>
-    <idPurp>Extract named feature types with SAM3, find similar imagery with embeddings, and label matching imagery using classes supplied in an example-point field.</idPurp>
-    <idAbs>Feature Extraction creates features from imagery using a built-in feature type or custom SAM3 prompt. Embedding Similarity finds imagery that resembles representative points. Classify Similarity repeats that search for every populated value in an example-point class field and writes matching features with an AUTO_CLASS value. Each class requires at least six representative example points.</idAbs>
+    <idPurp>Extract named feature types with SAM3, find similar imagery with embeddings, and classify supplied or extracted target features using classes supplied in an example-point field.</idPurp>
+    <idAbs>Feature Extraction creates features from imagery using a built-in feature type or custom SAM3 prompt. Embedding Similarity finds imagery that resembles representative points. Feature Classification uses supplied target polygons or SAM3-extracted features, then assigns each target the class with the strongest overlapping similarity evidence. Each class requires at least six representative example points.</idAbs>
     <searchKeys>
       <keyword>feature extraction</keyword>
       <keyword>feature classification</keyword>

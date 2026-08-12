@@ -12,11 +12,12 @@
     <arcToolboxHelpPath>c:\program files\arcgis\pro\Resources\Help\gp</arcToolboxHelpPath>
     <parameters>
       <param name="feature_type" displayname="Feature Type" datatype="GPString" direction="Input" type="Required"><dialogReference>Select a built-in object type for SAM3 extraction, or choose Custom and provide a Custom SAM3 Text Prompt.</dialogReference></param>
-      <param name="workflow" displayname="Workflow" datatype="GPString" direction="Input" type="Required"><dialogReference>Choose Feature Extraction, Embedding Similarity, or Classify Similarity. Classify Similarity labels matching features with the values from the selected example-point field.</dialogReference></param>
+      <param name="workflow" displayname="Workflow" datatype="GPString" direction="Input" type="Required"><dialogReference>Choose Feature Extraction, Embedding Similarity, or Feature Classification. Feature Classification assigns user-defined example classes to supplied or extracted target features.</dialogReference></param>
+      <param name="in_target_features" displayname="Input Features to Classify (Optional)" datatype="GPFeatureLayer" direction="Input" type="Optional"><dialogReference>Optional target polygons for Feature Classification. When supplied, feature extraction is skipped and these features receive the class with the strongest overlapping similarity evidence.</dialogReference></param>
       <param name="in_aoi" displayname="Area of Interest Polygon (Optional; Overrides Extent)" datatype="GPFeatureLayer" direction="Input" type="Optional"><dialogReference>Provide a polygon to limit processing. Otherwise, set the Processing Extent environment.</dialogReference></param>
-      <param name="in_example_points" displayname="Example Points for Similarity Search (Minimum 6 per Class)" datatype="GPFeatureLayer" direction="Input" type="Optional"><dialogReference>Provide representative points. Each class in a Classify Similarity run needs at least six points that intersect unique embedding cells.</dialogReference></param>
-      <param name="example_class_field" displayname="Example Class Field" datatype="GPString" direction="Input" type="Optional"><dialogReference>Select the example-point field containing the labels to assign, such as Green Roof or Brick Roof. Used only by Classify Similarity.</dialogReference></param>
-      <param name="out_features" displayname="Output Features" datatype="DEFeatureClass" direction="Output" type="Required"><dialogReference>Output extracted features, similar embedding cells, or class-labeled matching cells. Classify Similarity adds the AUTO_CLASS field.</dialogReference></param>
+      <param name="in_example_points" displayname="Classified Example Points (Minimum 6 per Class)" datatype="GPFeatureLayer" direction="Input" type="Optional"><dialogReference>Provide representative points. Each class in a Feature Classification run needs at least six points that intersect unique embedding cells.</dialogReference></param>
+      <param name="example_class_field" displayname="Example Class Field" datatype="GPString" direction="Input" type="Optional"><dialogReference>Select the example-point field containing the labels to assign, such as Green Roof or Brick Roof. Used only by Feature Classification.</dialogReference></param>
+      <param name="out_features" displayname="Output Features" datatype="DEFeatureClass" direction="Output" type="Required"><dialogReference>Output extracted features, similar embedding cells, or classified target features. Feature Classification adds AUTO_CLASS and CLASS_COV_PCT.</dialogReference></param>
       <param name="out_embeddings" displayname="Embeddings" datatype="DEFeatureClass" direction="Output" type="Derived"><dialogReference>Derived embedding cells used for similarity analysis.</dialogReference></param>
       <param name="out_similar_features" displayname="Similar Features" datatype="DEFeatureClass" direction="Output" type="Derived"><dialogReference>Derived embedding cells matching the supplied examples.</dialogReference></param>
     </parameters>
@@ -24,7 +25,7 @@
   <dataIdInfo>
     <idCitation><resTitle>Automated Feature Extraction and Classification</resTitle></idCitation>
     <idPurp>Creates features from imagery and classifies image similarity using user-defined example classes.</idPurp>
-    <idAbs>Use Feature Extraction to find a named object type with SAM3. Use Embedding Similarity to find locations matching representative examples. Use Classify Similarity to run one similarity search per class value and write AUTO_CLASS labels to the matching output.</idAbs>
+    <idAbs>Use Feature Extraction to find a named object type with SAM3. Use Embedding Similarity to find locations matching representative examples. Use Feature Classification to classify supplied target features or features extracted by SAM3 using user-defined example classes.</idAbs>
     <searchKeys>
       <keyword>feature extraction</keyword>
       <keyword>classification</keyword>
