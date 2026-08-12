@@ -2492,7 +2492,7 @@ def _generate_embeddings(
 
             try:
                 with arcpy.EnvManager(**environment):
-                    arcpy.geoai.GenerateEmbeddingsUsingAIModels(
+                    _generate_embeddings_with_model(
                         in_data=embedding_input,
                         out_embeddings_feature_class=chunk_output,
                         in_model_definition_file=model,
@@ -2535,6 +2535,19 @@ def _generate_embeddings(
         if arcpy.Exists(output_embeddings):
             arcpy.management.Delete(output_embeddings)
         raise
+
+
+def _generate_embeddings_with_model(**kwargs):
+    generate_embeddings = getattr(
+        getattr(arcpy, "geoai", None), "GenerateEmbeddingsUsingAIModels", None
+    )
+    if not generate_embeddings:
+        raise arcpy.ExecuteError(
+            "Generate Embeddings Using AI Models is unavailable in this ArcGIS Pro "
+            "installation. Install or update the GeoAI deep-learning tools required "
+            "by the ArcGIS Pro GeoAI toolbox."
+        )
+    return generate_embeddings(**kwargs)
 
 
 def _merge_embedding_chunks(
