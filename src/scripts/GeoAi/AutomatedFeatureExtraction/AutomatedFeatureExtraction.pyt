@@ -3827,7 +3827,6 @@ def _extract_target_features(
 ):
     raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
-    raster_layer = arcpy.CreateUniqueName("sam3_input_raster")
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
         f"Damage_{safe_feature_type}", output_workspace
@@ -3836,7 +3835,7 @@ def _extract_target_features(
 
     try:
         messages.addMessage(f"Detecting {feature_type.lower()} with SAM3...")
-        arcpy.management.MakeRasterLayer(source_imagery, raster_layer)
+        extraction_raster = _prepare_extraction_raster(source_imagery, messages)
         with arcpy.EnvManager(
             gpuId=gpu_id,
             extent=analysis_extent,
@@ -3845,7 +3844,7 @@ def _extract_target_features(
             outputCoordinateSystem=spatial_reference,
         ):
             arcpy.ia.DetectObjectsUsingDeepLearning(
-                in_raster=raster_layer,
+                in_raster=extraction_raster,
                 out_detected_objects=raw_features,
                 in_model_definition=sam_model,
                 arguments=(
@@ -3886,7 +3885,7 @@ def _extract_target_features(
         else:
             arcpy.management.CopyFeatures(nms_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features, raster_layer):
+        for dataset in (raw_features, nms_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
@@ -3896,6 +3895,17 @@ def _extract_target_features(
         )
     return target_features
 
+
+def _prepare_extraction_raster(source_imagery, messages):
+    spatial_reference = arcpy.Describe(source_imagery).spatialReference
+    if getattr(spatial_reference, "type", "") == "Projected":
+        messages.addMessage(
+            "Using the selected projected imagery layer directly for feature extraction."
+        )
+        return source_imagery
+    return _ensure_web_mercator_raster(
+        source_imagery, "Feature extraction imagery", messages
+    )
 
 def _regularize_building_footprints(
     input_features,
