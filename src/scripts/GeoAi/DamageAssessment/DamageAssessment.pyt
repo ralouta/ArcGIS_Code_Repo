@@ -3585,13 +3585,13 @@ def _create_debris_clusters(
         arcpy.management.SelectLayerByAttribute(
             cluster_layer,
             "NEW_SELECTION",
-            "Join_Count >= 2",
+            "Join_Count >= 4",
         )
         cluster_count = int(arcpy.management.GetCount(cluster_layer)[0])
         arcpy.management.CopyFeatures(cluster_layer, output_features)
         messages.addMessage(
             f"Created {cluster_count:,} debris polygon cluster(s) from matching "
-            "embedding cells; isolated cells were excluded."
+            "embedding cells; sparse matches were excluded."
         )
     finally:
         for dataset in (
@@ -3624,7 +3624,7 @@ def _debris_coverage_tolerance(similar_features):
             "Similar debris embedding features must contain valid polygon cells."
         )
     cell_width = statistics.median(cell_widths)
-    return cell_width * 1.5, statistics.median(cell_areas) * 3.0
+    return cell_width * 0.5, statistics.median(cell_areas) * 2.0
 
 
 def _run_damage_classification(
