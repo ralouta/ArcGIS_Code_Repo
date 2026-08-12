@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en">
+  <Esri>
+    <CreaDate>20260812</CreaDate>
+    <CreaTime>10324500</CreaTime>
+    <ArcGISFormat>1.0</ArcGISFormat>
+    <SyncOnce>TRUE</SyncOnce>
+    <ArcGISProfile>ItemDescription</ArcGISProfile>
+  </Esri>
+  <toolbox name="AutomatedFeatureExtraction" alias="automatedfeatureextraction">
+    <arcToolboxHelpPath>c:\program files\arcgis\pro\Resources\Help\gp</arcToolboxHelpPath>
+    <toolsets/>
+  </toolbox>
+  <dataIdInfo>
+    <idCitation><resTitle>Automated Feature Extraction and Classification</resTitle></idCitation>
+    <idPurp>Extract named feature types with SAM3, find similar imagery with embeddings, and label matching imagery using classes supplied in an example-point field.</idPurp>
+    <idAbs>Feature Extraction creates features from imagery using a built-in feature type or custom SAM3 prompt. Embedding Similarity finds imagery that resembles representative points. Classify Similarity repeats that search for every populated value in an example-point class field and writes matching features with an AUTO_CLASS value. Each class requires at least six representative example points.</idAbs>
+    <searchKeys>
+      <keyword>feature extraction</keyword>
+      <keyword>feature classification</keyword>
+      <keyword>ArcGIS GeoAI</keyword>
+      <keyword>SAM3</keyword>
+      <keyword>embedding similarity</keyword>
+      <keyword>deep learning</keyword>
+    </searchKeys>
+  </dataIdInfo>
+  <distInfo><distributor><distorFormat><formatName>ArcToolbox Toolbox</formatName></distorFormat></distributor></distInfo>
+  <mdHrLv><ScopeCd value="005"/></mdHrLv>
+  <mdDateSt Sync="TRUE">20260812</mdDateSt>
+</metadata>
