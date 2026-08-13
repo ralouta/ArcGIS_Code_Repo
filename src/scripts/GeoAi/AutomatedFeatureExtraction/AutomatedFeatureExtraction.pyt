@@ -274,6 +274,8 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 100.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
+        "field_aggregation_m": 1.0,
+        "field_hole_fill_sqm": 100.0,
     },
     "Park-Like Green Space": {
         "prompt": "park green space",
@@ -702,6 +704,7 @@ class AutomatedFeatureExtraction(object):
             raise arcpy.ExecuteError("Provide example points for similarity analysis.")
         generated_embeddings = None
         out_similar = None
+        seed_evidence = None
         if existing_embeddings:
             out_embeddings = existing_embeddings
             messages.addMessage("Using existing embeddings; imagery preparation and generation are skipped.")
@@ -748,10 +751,13 @@ class AutomatedFeatureExtraction(object):
             )
             threshold = float(parameters[self.SIMILARITY_THRESHOLD].value or 0.55)
             if workflow == "Feature Classification":
+                seed_evidence = arcpy.CreateUniqueName(
+                    f"{_output_name_prefix(out_features)}_ClassSeeds", output_workspace
+                )
                 _find_classified_similar_features(
                     out_embeddings, target_features, sample_points,
-                    parameters[self.CLASS_FIELD].valueAsText,
-                    out_similar, threshold, arcpy.env.scratchGDB, messages,
+                    parameters[self.CLASS_FIELD].valueAsText, out_similar,
+                    seed_evidence, threshold, arcpy.env.scratchGDB, messages,
                 )
             else:
                 queries = _select_embedding_queries(out_embeddings, sample_points, arcpy.env.scratchGDB, messages)
@@ -769,7 +775,7 @@ class AutomatedFeatureExtraction(object):
             )
             if workflow == "Feature Classification":
                 _classify_target_features(
-                    target_features, out_similar, staged_features, arcpy.env.scratchGDB,
+                    target_features, out_similar, seed_evidence, staged_features, arcpy.env.scratchGDB,
                     messages,
                 )
             else:
@@ -781,7 +787,7 @@ class AutomatedFeatureExtraction(object):
             arcpy.management.Delete(staged_features)
         finally:
             if not parameters[self.KEEP_INTERMEDIATE].value:
-                for dataset in (out_similar, generated_embeddings, generated_target_features):
+                for dataset in (out_similar, seed_evidence, generated_embeddings, generated_target_features):
                     if dataset and arcpy.Exists(dataset):
                         arcpy.management.Delete(dataset)
                 parameters[self.OUT_SIMILAR].value = None
@@ -1094,7 +1100,8 @@ def _resolve_similarity_source(parameters, aoi, messages):
 
 
 def _find_classified_similar_features(
-    embedding_features, target_features, sample_points, class_field, output_features, threshold,
+    embedding_features, target_features, sample_points, class_field, output_features,
+    seed_output_features, threshold,
     scratch_workspace, messages,
 ):
     class_values = []
@@ -1111,6 +1118,7 @@ def _find_classified_similar_features(
     }
     sample_layer = arcpy.CreateUniqueName("classified_example_points", scratch_workspace)
     class_outputs = []
+    seed_outputs = []
     try:
         arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
         field_delimiter = arcpy.AddFieldDelimiters(sample_points, class_field)
@@ -1145,28 +1153,28 @@ def _find_classified_similar_features(
                 arcpy.management.AddField(seed_features, "AFE_CLASS", "TEXT", field_length=255)
                 arcpy.management.CalculateField(seed_features, "AFE_CLASS", repr(class_label), "PYTHON3")
                 class_outputs.append(class_output)
-                class_outputs.append(seed_features)
+                seed_outputs.append(seed_features)
                 seed_features = None
             finally:
                 for dataset in (class_samples, query_features, seed_features):
                     if dataset and arcpy.Exists(dataset):
                         arcpy.management.Delete(dataset)
         arcpy.management.Merge(class_outputs, output_features)
+        arcpy.management.Merge(seed_outputs, seed_output_features)
     finally:
         if arcpy.Exists(sample_layer):
             arcpy.management.Delete(sample_layer)
-        for dataset in class_outputs:
+        for dataset in class_outputs + seed_outputs:
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
 
 def _classify_target_features(
-    target_features, similar_features, output_features, scratch_workspace, messages,
+    target_features, similar_features, seed_features, output_features, scratch_workspace, messages,
 ):
     target_id_field = "AFE_TARGET_ID"
     target_area_field = "AFE_AREA_SQM"
     evidence_area_field = "AFE_EVID_SQM"
-    intersections = arcpy.CreateUniqueName("class_intersections", scratch_workspace)
     arcpy.management.CopyFeatures(target_features, output_features)
     existing_fields = {field.name.upper() for field in arcpy.ListFields(output_features)}
     if target_id_field not in existing_fields:
@@ -1187,28 +1195,30 @@ def _classify_target_features(
         output_features, [[target_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
     )
     evidence_by_target = {}
-    try:
-        arcpy.analysis.PairwiseIntersect(
-            [output_features, similar_features], intersections, "ALL", None, "INPUT"
-        )
-        if int(arcpy.management.GetCount(intersections)[0]):
-            arcpy.management.AddField(intersections, evidence_area_field, "DOUBLE")
-            arcpy.management.CalculateGeometryAttributes(
-                intersections, [[evidence_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+    for evidence_features in (similar_features, seed_features):
+        intersections = arcpy.CreateUniqueName("class_intersections", scratch_workspace)
+        try:
+            arcpy.analysis.PairwiseIntersect(
+                [output_features, evidence_features], intersections, "ALL", None, "INPUT"
             )
-            with arcpy.da.SearchCursor(
-                intersections, [target_id_field, "AFE_CLASS", evidence_area_field]
-            ) as cursor:
-                for target_id, class_value, evidence_area in cursor:
-                    if target_id is None or not class_value:
-                        continue
-                    target_evidence = evidence_by_target.setdefault(target_id, {})
-                    target_evidence[class_value] = (
-                        target_evidence.get(class_value, 0.0) + (evidence_area or 0.0)
-                    )
-    finally:
-        if arcpy.Exists(intersections):
-            arcpy.management.Delete(intersections)
+            if int(arcpy.management.GetCount(intersections)[0]):
+                arcpy.management.AddField(intersections, evidence_area_field, "DOUBLE")
+                arcpy.management.CalculateGeometryAttributes(
+                    intersections, [[evidence_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+                )
+                with arcpy.da.SearchCursor(
+                    intersections, [target_id_field, "AFE_CLASS", evidence_area_field]
+                ) as cursor:
+                    for target_id, class_value, evidence_area in cursor:
+                        if target_id is None or not class_value:
+                            continue
+                        target_evidence = evidence_by_target.setdefault(target_id, {})
+                        target_evidence[class_value] = (
+                            target_evidence.get(class_value, 0.0) + (evidence_area or 0.0)
+                        )
+        finally:
+            if arcpy.Exists(intersections):
+                arcpy.management.Delete(intersections)
 
     classified_count = 0
     with arcpy.da.UpdateCursor(
@@ -4414,6 +4424,11 @@ def _extract_target_features(
                 qa_features, target_features, FEATURE_PROFILES[feature_type],
                 spatial_reference, scratch_workspace, messages,
             )
+        elif feature_type == "Agricultural Fields":
+            _clean_agricultural_fields(
+                qa_features, target_features, FEATURE_PROFILES[feature_type],
+                spatial_reference, scratch_workspace, messages,
+            )
         else:
             arcpy.management.CopyFeatures(qa_features, target_features)
     finally:
@@ -4636,6 +4651,58 @@ def _clean_road_surfaces(
             repaired_features, directional_connectors, road_inputs, aggregated_features,
             hole_filled_features, smoothed_features,
         ):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+
+
+def _clean_agricultural_fields(
+    input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
+):
+    repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
+    aggregated_features = arcpy.CreateUniqueName("field_aggregated", scratch_workspace)
+    cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
+    aggregation_distance = _meters_to_spatial_units(
+        profile["field_aggregation_m"], spatial_reference
+    )
+    hole_fill_area = _square_meters_to_spatial_units(
+        profile["field_hole_fill_sqm"], spatial_reference
+    )
+    try:
+        messages.addMessage(
+            "Running agricultural-field QA: merging touching masks and filling small enclosed gaps..."
+        )
+        arcpy.management.CopyFeatures(input_features, repaired_features)
+        arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
+        arcpy.cartography.AggregatePolygons(
+            in_features=repaired_features,
+            out_feature_class=aggregated_features,
+            aggregation_distance=aggregation_distance,
+            minimum_area=0,
+            minimum_hole_size=hole_fill_area,
+            orthogonality_option="NON_ORTHOGONAL",
+        )
+        arcpy.management.EliminatePolygonPart(
+            in_features=aggregated_features,
+            out_feature_class=cleaned_features,
+            condition="AREA",
+            part_area=hole_fill_area,
+            part_area_percent="0",
+            part_option="CONTAINED_ONLY",
+        )
+        arcpy.management.RepairGeometry(cleaned_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(cleaned_features)[0]):
+            raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
+        arcpy.management.CopyFeatures(cleaned_features, output_features)
+        messages.addMessage(
+            "Agricultural-field QA completed with 1.0 m fragment merging and 100 sq m enclosed-gap filling."
+        )
+    except Exception as error:
+        messages.addWarningMessage(
+            f"Agricultural-field QA could not complete ({error}); retaining original field detections."
+        )
+        arcpy.management.CopyFeatures(input_features, output_features)
+    finally:
+        for dataset in (repaired_features, aggregated_features, cleaned_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
