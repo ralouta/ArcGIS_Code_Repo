@@ -312,6 +312,15 @@ FEATURE_PROFILES = {
         "nms_overlap": 0.6,
     },
 }
+
+
+def _feature_type_choices():
+    return sorted(
+        (feature_type for feature_type in FEATURE_PROFILES if feature_type != "Custom"),
+        key=str.casefold,
+    ) + ["Custom"]
+
+
 DEFAULT_WORKFLOWS = {
     "Debris": "Embedding Similarity",
     "Vehicles": "Damage Assessment",
@@ -392,7 +401,7 @@ class AutomatedFeatureExtraction(object):
     def getParameterInfo(self):
         feature_type = _string_parameter(
             "Feature Type", "feature_type", "Feature Definition", "Buildings",
-            list(FEATURE_PROFILES), True,
+            _feature_type_choices(), True,
         )
         workflow = _string_parameter(
             "Workflow", "workflow", "Feature Definition", "Feature Extraction",
@@ -615,6 +624,10 @@ class AutomatedFeatureExtraction(object):
             )
 
     def execute(self, parameters, messages):
+        with arcpy.EnvManager(addOutputsToMap=False):
+            self._execute_internal(parameters, messages)
+
+    def _execute_internal(self, parameters, messages):
         workflow = parameters[self.WORKFLOW].valueAsText or "Feature Extraction"
         feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
         profile = FEATURE_PROFILES[feature_type]
@@ -1209,7 +1222,7 @@ class AutomatedDamageAssessment(object):
             direction="Input",
         )
         feature_type.filter.type = "ValueList"
-        feature_type.filter.list = list(FEATURE_PROFILES)
+        feature_type.filter.list = _feature_type_choices()
         feature_type.value = "Buildings"
         feature_type.category = "1. Target Features"
 
@@ -4261,6 +4274,7 @@ def _extract_target_features(
     finally:
         for dataset in (raw_features, nms_features):
             if arcpy.Exists(dataset):
+                _remove_dataset_from_active_map(dataset)
                 arcpy.management.Delete(dataset)
 
     if int(arcpy.management.GetCount(target_features)[0]) == 0:
