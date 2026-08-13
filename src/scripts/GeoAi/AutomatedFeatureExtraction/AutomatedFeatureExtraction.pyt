@@ -29,6 +29,9 @@ CACHE_FORMAT_VERSION = 1
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
 DUPLICATE_IOU_THRESHOLD = 0.85
+BUILDING_ENVELOPE_MIN_COVERAGE = 0.10
+BUILDING_ENVELOPE_MAX_COVERAGE = 0.65
+BUILDING_ENVELOPE_CONFIDENCE_MARGIN = 0.03
 EMBEDDING_MODELS = {
     "EO-DINO (Default; Multisensor/RGB)": {
         "item_id": EO_DINO_ITEM_ID,
@@ -2890,7 +2893,7 @@ def _generate_embeddings(
                 "to avoid long-running raster worker timeouts."
             )
         else:
-            messages.addMessage("Generating embeddings from post-event imagery...")
+            messages.addMessage("Generating embeddings from analysis imagery...")
 
     chunk_workspace = None
     chunk_raster_folder = None
@@ -4320,6 +4323,7 @@ def _extract_target_features(
 ):
     raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
+    building_features = arcpy.CreateUniqueName("sam3_building_candidates", scratch_workspace)
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
         f"{_output_name_prefix(output_features)}_{safe_feature_type}", output_workspace
@@ -4367,8 +4371,16 @@ def _extract_target_features(
         messages.addMessage(f"SAM3 detections after duplicate removal: {detection_count}")
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
+            rejected_envelope_count = _remove_overgrown_building_masks(
+                nms_features, building_features, scratch_workspace
+            )
+            if rejected_envelope_count:
+                messages.addMessage(
+                    f"Rejected {rejected_envelope_count:,} low-confidence building mask(s) "
+                    "that enclosed multiple distinct higher-confidence detections."
+                )
             _regularize_building_footprints(
-                nms_features,
+                building_features,
                 target_features,
                 spatial_reference,
                 scratch_workspace,
@@ -4382,7 +4394,7 @@ def _extract_target_features(
         else:
             arcpy.management.CopyFeatures(nms_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features):
+        for dataset in (raw_features, nms_features, building_features):
             if arcpy.Exists(dataset):
                 _remove_dataset_from_active_map(dataset)
                 arcpy.management.Delete(dataset)
@@ -4441,6 +4453,58 @@ def _remove_near_duplicate_polygons(
     finally:
         if arcpy.Exists(selected_features):
             arcpy.management.Delete(selected_features)
+
+
+def _remove_overgrown_building_masks(input_features, output_features, scratch_workspace):
+    """Reject broad low-confidence envelopes around multiple separate roof detections."""
+    candidates = []
+    with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
+        for object_id, geometry, confidence in cursor:
+            area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
+            if area > 0:
+                candidates.append((object_id, geometry, area, float(confidence or 0)))
+
+    rejected_ids = set()
+    for object_id, geometry, area, confidence in candidates:
+        contained_masks = []
+        for other_id, other_geometry, other_area, other_confidence in candidates:
+            if other_id == object_id or other_area >= area or other_confidence < confidence + BUILDING_ENVELOPE_CONFIDENCE_MARGIN:
+                continue
+            if geometry.disjoint(other_geometry):
+                continue
+            intersection = geometry.intersect(other_geometry, 4)
+            intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")
+            if intersection_area / other_area >= 0.80:
+                contained_masks.append((other_geometry, intersection_area))
+        if len(contained_masks) < 2:
+            continue
+        covered_area = sum(intersection_area for _, intersection_area in contained_masks)
+        coverage = covered_area / area
+        distinct_masks = any(
+            first_geometry.disjoint(second_geometry)
+            for index, (first_geometry, _) in enumerate(contained_masks)
+            for second_geometry, _ in contained_masks[index + 1:]
+        )
+        if distinct_masks and BUILDING_ENVELOPE_MIN_COVERAGE <= coverage <= BUILDING_ENVELOPE_MAX_COVERAGE:
+            rejected_ids.add(object_id)
+
+    keep_field = "AFE_KEEP_BUILDING"
+    selected_features = arcpy.CreateUniqueName("building_mask_selection", scratch_workspace)
+    try:
+        arcpy.management.AddField(input_features, keep_field, "SHORT")
+        with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
+            for object_id, _ in cursor:
+                cursor.updateRow([object_id, int(object_id not in rejected_ids)])
+        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
+        arcpy.management.MakeFeatureLayer(
+            input_features, selected_features, f"{field_delimiter} = 1"
+        )
+        arcpy.management.CopyFeatures(selected_features, output_features)
+        arcpy.management.DeleteField(output_features, keep_field)
+    finally:
+        if arcpy.Exists(selected_features):
+            arcpy.management.Delete(selected_features)
+    return len(rejected_ids)
 
 
 def _prepare_extraction_raster(source_imagery, messages):
