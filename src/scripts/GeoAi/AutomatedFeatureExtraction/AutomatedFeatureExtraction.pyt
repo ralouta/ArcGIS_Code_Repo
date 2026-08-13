@@ -16,7 +16,7 @@ import urllib.request
 import arcpy
 
 
-TOOL_VERSION = "5.3.0"
+TOOL_VERSION = "5.4.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -62,48 +62,220 @@ FEATURE_PROFILES = {
         "detection_cell_size": 0.3,
         "embedding_grid_size": 11,
         "regularize": True,
+        "feature_code": "BUILDING_FOOTPRINT",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 9.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
     },
     "Bridges": {
         "prompt": "bridge",
         "detection_cell_size": 0.3,
         "embedding_grid_size": 11,
         "regularize": False,
+        "feature_code": "BRIDGE_DECK",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 16.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
     },
     "Roads": {
         "prompt": "road",
         "detection_cell_size": 0.5,
         "embedding_grid_size": 11,
         "regularize": False,
+        "feature_code": "ROAD_SURFACE_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Water Bodies": {
+        "prompt": "water body",
+        "detection_cell_size": 0.5,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "WATERBODY",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Rail Corridors": {
+        "prompt": "railway",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "RAIL_CORRIDOR_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 16.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Impervious Surfaces": {
+        "prompt": "paved surface",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "IMPERVIOUS_SURFACE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 16.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Parking Areas": {
+        "prompt": "parking area",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "PARKING_AREA",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Solar Arrays": {
+        "prompt": "solar panel array",
+        "detection_cell_size": 0.2,
+        "embedding_grid_size": 9,
+        "regularize": False,
+        "feature_code": "SOLAR_ARRAY",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 4.0,
+        "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
+    },
+    "Sports Surfaces": {
+        "prompt": "sports field",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "SPORTS_SURFACE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 100.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Swimming Pools": {
+        "prompt": "swimming pool",
+        "detection_cell_size": 0.2,
+        "embedding_grid_size": 9,
+        "regularize": False,
+        "feature_code": "SWIMMING_POOL",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 8.0,
+        "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
+    },
+    "Construction Areas": {
+        "prompt": "construction site",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 9,
+        "regularize": False,
+        "feature_code": "CONSTRUCTION_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Material Stockpiles": {
+        "prompt": "material stockpile",
+        "detection_cell_size": 0.2,
+        "embedding_grid_size": 7,
+        "regularize": False,
+        "feature_code": "STOCKPILE_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 9.0,
+        "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
+    },
+    "Bare Ground": {
+        "prompt": "bare ground",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "BARE_GROUND_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Flooded Areas": {
+        "prompt": "flooded area",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 9,
+        "regularize": False,
+        "feature_code": "FLOOD_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 25.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
     },
     "Debris": {
         "prompt": "debris",
         "detection_cell_size": 0.2,
         "embedding_grid_size": 1,
         "regularize": False,
+        "feature_code": "DEBRIS_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 4.0,
+        "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
     },
     "Vehicles": {
         "prompt": "vehicle",
         "detection_cell_size": 0.15,
         "embedding_grid_size": 1,
         "regularize": False,
+        "feature_code": "VEHICLE_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 2.0,
+        "maximum_gsd_m": 0.2,
+        "nms_overlap": 0.6,
     },
     "Trees": {
         "prompt": "tree",
         "detection_cell_size": 0.2,
         "embedding_grid_size": 9,
         "regularize": False,
+        "feature_code": "TREE_CANOPY",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 4.0,
+        "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
     },
     "Utility Poles": {
         "prompt": "utility pole",
         "detection_cell_size": 0.1,
         "embedding_grid_size": 7,
         "regularize": False,
+        "feature_code": "UTILITY_POLE_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 0.25,
+        "maximum_gsd_m": 0.15,
+        "nms_overlap": 0.6,
+    },
+    "Other Structures": {
+        "prompt": "structure",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 9,
+        "regularize": False,
+        "feature_code": "OTHER_STRUCTURE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 4.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
     },
     "Custom": {
         "prompt": "",
         "detection_cell_size": 0.3,
         "embedding_grid_size": 7,
         "regularize": False,
+        "feature_code": "CUSTOM_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 0.0,
+        "maximum_gsd_m": None,
+        "nms_overlap": 0.6,
     },
 }
 DEFAULT_WORKFLOWS = {
@@ -409,6 +581,7 @@ class AutomatedFeatureExtraction(object):
     def execute(self, parameters, messages):
         workflow = parameters[self.WORKFLOW].valueAsText or "Feature Extraction"
         feature_type = parameters[self.FEATURE_TYPE].valueAsText or "Buildings"
+        profile = FEATURE_PROFILES[feature_type]
         aoi = parameters[self.AOI].valueAsText
         out_features = parameters[self.OUT_FEATURES].valueAsText
         output_workspace = _geodatabase_workspace(out_features)
@@ -416,7 +589,17 @@ class AutomatedFeatureExtraction(object):
             raise arcpy.ExecuteError("Output Features must be stored in a file or enterprise geodatabase.")
         messages.addMessage(f"Automated Feature Extraction and Classification version {TOOL_VERSION}")
         messages.addMessage(f"Workflow: {workflow}; feature type: {feature_type}")
+        candidate_context = {
+            "run_id": str(uuid.uuid4()),
+            "workflow": workflow,
+            "feature_type": feature_type,
+            "source_image": None,
+            "model_id": None,
+            "model_file": None,
+        }
         target_features = parameters[self.IN_TARGET].valueAsText
+        if target_features:
+            candidate_context["source_image"] = _dataset_label(target_features)
         generated_target_features = None
         requires_extraction = workflow == "Feature Extraction" or (
             workflow == "Feature Classification" and not target_features
@@ -424,10 +607,13 @@ class AutomatedFeatureExtraction(object):
         if requires_extraction:
             _validate_gpu_memory(int(parameters[self.GPU_ID].value or 0), messages)
             source = _resolve_extraction_source(parameters, aoi, messages)
+            candidate_context["source_image"] = _dataset_label(source)
             detection_cell_size = float(
                 parameters[self.DETECTION_CELL_SIZE].value or FEATURE_PROFILES[feature_type]["detection_cell_size"]
             )
             model = _resolve_model(parameters[self.SAM_MODEL].valueAsText, SAM3_ITEM_ID, "SAM3.dlpk", messages)
+            candidate_context["model_id"] = SAM3_ITEM_ID
+            candidate_context["model_file"] = model
             extent, spatial_reference, _ = _resolve_analysis_extent(aoi, source, True)
             target_features = _extract_target_features(
                 source, extent, spatial_reference, feature_type,
@@ -438,20 +624,20 @@ class AutomatedFeatureExtraction(object):
             )
             generated_target_features = target_features
         if workflow == "Feature Extraction":
-            if arcpy.Exists(out_features):
-                arcpy.management.Delete(out_features)
-            arcpy.management.CopyFeatures(target_features, out_features)
+            _publish_candidate_features(
+                target_features, out_features, profile, candidate_context, messages
+            )
             if generated_target_features and arcpy.Exists(generated_target_features):
                 arcpy.management.Delete(generated_target_features)
             return
         self._execute_similarity(
             parameters, messages, workflow, feature_type, aoi, output_workspace,
-            out_features, target_features, generated_target_features,
+            out_features, target_features, generated_target_features, candidate_context,
         )
 
     def _execute_similarity(
         self, parameters, messages, workflow, feature_type, aoi, output_workspace,
-        out_features, target_features, generated_target_features,
+        out_features, target_features, generated_target_features, candidate_context,
     ):
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
@@ -468,6 +654,9 @@ class AutomatedFeatureExtraction(object):
             source, extent, spatial_reference = _resolve_similarity_source(parameters, aoi, messages)
             selected_model = EMBEDDING_MODELS[parameters[self.ONLINE_EMBEDDING_MODEL].valueAsText]
             model = _resolve_model(parameters[self.EMBEDDING_MODEL].valueAsText, selected_model["item_id"], selected_model["file_name"], messages)
+            candidate_context["source_image"] = _dataset_label(source)
+            candidate_context["model_id"] = selected_model["item_id"]
+            candidate_context["model_file"] = model
             grid_size = int(parameters[self.GRID_SIZE].value or FEATURE_PROFILES[feature_type]["embedding_grid_size"])
             source = _ensure_web_mercator_raster(source, "Similarity analysis imagery", messages)
             out_embeddings = arcpy.CreateUniqueName(
@@ -500,15 +689,21 @@ class AutomatedFeatureExtraction(object):
                     if arcpy.Exists(queries):
                         arcpy.management.Delete(queries)
             parameters[self.OUT_SIMILAR].value = out_similar
-            if arcpy.Exists(out_features):
-                arcpy.management.Delete(out_features)
+            staged_features = arcpy.CreateUniqueName(
+                f"{_output_name_prefix(out_features)}_CandidateStage", output_workspace
+            )
             if workflow == "Feature Classification":
                 _classify_target_features(
-                    target_features, out_similar, out_features, arcpy.env.scratchGDB,
+                    target_features, out_similar, staged_features, arcpy.env.scratchGDB,
                     messages,
                 )
             else:
-                arcpy.management.CopyFeatures(out_similar, out_features)
+                arcpy.management.CopyFeatures(out_similar, staged_features)
+            _publish_candidate_features(
+                staged_features, out_features, FEATURE_PROFILES[feature_type],
+                candidate_context, messages,
+            )
+            arcpy.management.Delete(staged_features)
         finally:
             if not parameters[self.KEEP_INTERMEDIATE].value:
                 for dataset in (out_similar, generated_embeddings, generated_target_features):
@@ -563,6 +758,85 @@ def _numeric_parameter(display_name, name, datatype, category, value=None):
 def _output_name_prefix(output_features):
     base_name = os.path.basename(output_features or "AutomatedFeatures")
     return re.sub("[^A-Za-z0-9_]+", "_", base_name).strip("_") or "AutomatedFeatures"
+
+
+def _dataset_label(dataset):
+    if not dataset:
+        return None
+    try:
+        return arcpy.Describe(dataset).catalogPath
+    except Exception:
+        return str(dataset)
+
+
+def _publish_candidate_features(input_features, output_features, profile, context, messages):
+    """Atomically publish an auditable candidate layer without discarding QA failures."""
+    output_workspace = _geodatabase_workspace(output_features)
+    staged_features = arcpy.CreateUniqueName(
+        f"{_output_name_prefix(output_features)}_PublishStage", output_workspace
+    )
+    fields = (
+        ("AFE_RUN_ID", "TEXT", 36),
+        ("FEATURE_CODE", "TEXT", 64),
+        ("FEATURE_TYPE", "TEXT", 64),
+        ("GEOM_ROLE", "TEXT", 32),
+        ("QC_STATUS", "TEXT", 32),
+        ("QC_REASON", "TEXT", 255),
+        ("TOOL_VERSION", "TEXT", 32),
+        ("PROFILE_VER", "TEXT", 16),
+        ("SOURCE_IMAGE", "TEXT", 1000),
+        ("MODEL_ITEM_ID", "TEXT", 64),
+        ("MODEL_FILE", "TEXT", 1000),
+        ("RUN_UTC", "DATE", None),
+        ("AREA_SQM", "DOUBLE", None),
+    )
+    try:
+        arcpy.management.CopyFeatures(input_features, staged_features)
+        existing_fields = {field.name.upper() for field in arcpy.ListFields(staged_features)}
+        for field_name, field_type, field_length in fields:
+            if field_name.upper() not in existing_fields:
+                add_kwargs = {"field_name": field_name, "field_type": field_type}
+                if field_length:
+                    add_kwargs["field_length"] = field_length
+                arcpy.management.AddField(staged_features, **add_kwargs)
+        minimum_area = float(profile["minimum_area_sqm"])
+        run_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        with arcpy.da.UpdateCursor(
+            staged_features,
+            ["SHAPE@", "AFE_RUN_ID", "FEATURE_CODE", "FEATURE_TYPE", "GEOM_ROLE",
+             "QC_STATUS", "QC_REASON", "TOOL_VERSION", "PROFILE_VER", "SOURCE_IMAGE",
+             "MODEL_ITEM_ID", "MODEL_FILE", "RUN_UTC", "AREA_SQM"],
+        ) as cursor:
+            for row in cursor:
+                geometry = row[0]
+                area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
+                if not geometry or geometry.isEmpty:
+                    qc_status, qc_reason = "Rejected", "Empty or null geometry"
+                elif area_sqm < minimum_area:
+                    qc_status = "Rejected"
+                    qc_reason = f"Area below profile minimum of {minimum_area:g} square meters"
+                elif profile["feature_code"] == "CUSTOM_CANDIDATE":
+                    qc_status, qc_reason = "NeedsReview", "Custom profile has no governed production specification"
+                else:
+                    qc_status, qc_reason = "NeedsReview", "Automated candidate requires topographic review"
+                row[1:] = [
+                    context["run_id"], profile["feature_code"], context["feature_type"],
+                    "Candidate" if context["workflow"] == "Feature Classification" else "Evidence",
+                    qc_status, qc_reason, TOOL_VERSION, "1.0",
+                    context.get("source_image"), context.get("model_id"), context.get("model_file"),
+                    run_utc, area_sqm,
+                ]
+                cursor.updateRow(row)
+        if arcpy.Exists(output_features):
+            arcpy.management.Delete(output_features)
+        arcpy.management.CopyFeatures(staged_features, output_features)
+        messages.addMessage(
+            "Published an auditable candidate layer. QC_STATUS is NeedsReview or Rejected; "
+            "no feature has been accepted as authoritative topographic data."
+        )
+    finally:
+        if arcpy.Exists(staged_features):
+            arcpy.management.Delete(staged_features)
 
 
 def _usable_field_names(feature_class):
@@ -674,6 +948,7 @@ def _find_classified_similar_features(
         for (value,) in cursor:
             if value is not None and str(value).strip() and value not in class_values:
                 class_values.append(value)
+    class_values.sort(key=lambda value: str(value).casefold())
     if not class_values:
         raise arcpy.ExecuteError("The selected class field has no populated values.")
     sample_layer = arcpy.CreateUniqueName("classified_example_points", scratch_workspace)
@@ -731,6 +1006,10 @@ def _classify_target_features(
         arcpy.management.AddField(output_features, "AUTO_CLASS", "TEXT", field_length=255)
     if "CLASS_COV_PCT" not in existing_fields:
         arcpy.management.AddField(output_features, "CLASS_COV_PCT", "DOUBLE")
+    if "CLASS_REASON" not in existing_fields:
+        arcpy.management.AddField(output_features, "CLASS_REASON", "TEXT", field_length=255)
+    if "EVIDENCE_METRIC" not in existing_fields:
+        arcpy.management.AddField(output_features, "EVIDENCE_METRIC", "TEXT", field_length=32)
     if target_area_field not in existing_fields:
         arcpy.management.AddField(output_features, target_area_field, "DOUBLE")
     oid_field = arcpy.Describe(output_features).OIDFieldName
@@ -764,22 +1043,38 @@ def _classify_target_features(
 
     classified_count = 0
     with arcpy.da.UpdateCursor(
-        output_features, [target_id_field, target_area_field, "AUTO_CLASS", "CLASS_COV_PCT"]
+        output_features,
+        [target_id_field, target_area_field, "AUTO_CLASS", "CLASS_COV_PCT", "CLASS_REASON", "EVIDENCE_METRIC"],
     ) as cursor:
-        for target_id, target_area, class_value, coverage_percent in cursor:
+        for target_id, target_area, class_value, coverage_percent, class_reason, evidence_metric in cursor:
             class_evidence = evidence_by_target.get(target_id, {})
             if class_evidence:
-                class_value, evidence_area = max(
-                    class_evidence.items(), key=lambda item: item[1]
+                ranked_classes = sorted(
+                    class_evidence.items(), key=lambda item: (-item[1], str(item[0]).casefold())
                 )
+                class_value, evidence_area = ranked_classes[0]
                 coverage_percent = min(
                     100.0, (evidence_area / target_area) * 100.0
                 ) if target_area else 0.0
-                classified_count += 1
+                tied_classes = [
+                    str(value) for value, area in ranked_classes
+                    if math.isclose(area, evidence_area, rel_tol=1e-9, abs_tol=1e-6)
+                ]
+                if len(tied_classes) > 1:
+                    class_value = "Ambiguous"
+                    class_reason = "Equal evidence for: " + ", ".join(tied_classes)
+                else:
+                    class_reason = "Strongest overlapping class evidence"
+                    classified_count += 1
             else:
                 class_value = "Unclassified"
                 coverage_percent = 0.0
-            cursor.updateRow([target_id, target_area, class_value, coverage_percent])
+                class_reason = "No overlapping class evidence"
+            evidence_metric = "AreaCoveragePercent"
+            cursor.updateRow([
+                target_id, target_area, class_value, coverage_percent,
+                class_reason, evidence_metric,
+            ])
     arcpy.management.DeleteField(output_features, [target_id_field, target_area_field])
     messages.addMessage(
         f"Classified {classified_count} of {int(arcpy.management.GetCount(output_features)[0])} target feature(s)."
@@ -3885,14 +4180,15 @@ def _extract_target_features(
 
         messages.addMessage("Applying nonmaximum suppression to extracted features...")
         messages.addMessage(
-            "Using a conservative 60% overlap threshold so adjacent buildings are retained."
+            f"Using the {FEATURE_PROFILES[feature_type]['nms_overlap']:.0%} profile overlap threshold "
+            "so adjacent candidates are retained."
         )
         arcpy.ia.NonMaximumSuppression(
             in_featureclass=raw_features,
             confidence_score_field="Confidence",
             out_featureclass=nms_features,
             class_value_field="Class",
-            max_overlap_ratio=0.6,
+            max_overlap_ratio=FEATURE_PROFILES[feature_type]["nms_overlap"],
         )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
         messages.addMessage(f"SAM3 detections after NMS: {detection_count}")
