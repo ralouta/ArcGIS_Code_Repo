@@ -480,11 +480,13 @@ class AutomatedFeatureExtraction(object):
             parameterType="Derived", direction="Output",
         )
         out_embeddings.category = "Outputs"
+        out_embeddings.addToMap = False
         out_similar = arcpy.Parameter(
             displayName="Similar Features", name="out_similar_features", datatype="DEFeatureClass",
             parameterType="Derived", direction="Output",
         )
         out_similar.category = "Outputs"
+        out_similar.addToMap = False
         keep_intermediate = arcpy.Parameter(
             displayName="Keep Intermediate Data", name="keep_intermediate_data",
             datatype="GPBoolean", parameterType="Optional", direction="Input",
@@ -710,7 +712,8 @@ class AutomatedFeatureExtraction(object):
             threshold = float(parameters[self.SIMILARITY_THRESHOLD].value or 0.55)
             if workflow == "Feature Classification":
                 _find_classified_similar_features(
-                    out_embeddings, sample_points, parameters[self.CLASS_FIELD].valueAsText,
+                    out_embeddings, target_features, sample_points,
+                    parameters[self.CLASS_FIELD].valueAsText,
                     out_similar, threshold, arcpy.env.scratchGDB, messages,
                 )
             else:
@@ -740,10 +743,12 @@ class AutomatedFeatureExtraction(object):
             )
             arcpy.management.Delete(staged_features)
         finally:
+            for dataset in (out_similar, generated_embeddings, generated_target_features):
+                if dataset and arcpy.Exists(dataset):
+                    _remove_dataset_from_active_map(dataset)
             if not parameters[self.KEEP_INTERMEDIATE].value:
                 for dataset in (out_similar, generated_embeddings, generated_target_features):
                     if dataset and arcpy.Exists(dataset):
-                        _remove_dataset_from_active_map(dataset)
                         arcpy.management.Delete(dataset)
                 parameters[self.OUT_SIMILAR].value = None
                 if generated_embeddings:
@@ -994,7 +999,7 @@ def _resolve_similarity_source(parameters, aoi, messages):
 
 
 def _find_classified_similar_features(
-    embedding_features, sample_points, class_field, output_features, threshold,
+    embedding_features, target_features, sample_points, class_field, output_features, threshold,
     scratch_workspace, messages,
 ):
     class_values = []
@@ -1019,8 +1024,9 @@ def _find_classified_similar_features(
             class_output = arcpy.CreateUniqueName("class_similar", scratch_workspace)
             try:
                 arcpy.management.CopyFeatures(sample_layer, class_samples)
-                query_features = _select_embedding_queries(
-                    embedding_features, class_samples, scratch_workspace, messages
+                query_features = _select_feature_embedding_queries(
+                    embedding_features, target_features, class_samples,
+                    scratch_workspace, messages,
                 )
                 messages.addMessage(f"Finding matches for class '{value}' ({index} of {len(class_values)})...")
                 arcpy.geoai.FindSimilarFeaturesUsingEmbeddings(
@@ -4488,6 +4494,49 @@ def _select_embedding_queries(
     finally:
         if arcpy.Exists(embedding_layer):
             arcpy.management.Delete(embedding_layer)
+
+
+def _select_feature_embedding_queries(
+    embedding_features, target_features, sample_points, scratch_workspace, messages,
+):
+    target_layer = arcpy.CreateUniqueName("classification_target_selection")
+    embedding_layer = arcpy.CreateUniqueName("classification_embedding_selection")
+    query_features = arcpy.CreateUniqueName("classification_embedding_queries", scratch_workspace)
+    try:
+        arcpy.management.MakeFeatureLayer(target_features, target_layer)
+        arcpy.management.SelectLayerByLocation(
+            target_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
+        )
+        target_count = int(arcpy.management.GetCount(target_layer)[0])
+        if target_count < 6:
+            raise arcpy.ExecuteError(
+                "Each class needs example points that intersect at least 6 unique target features; "
+                f"{target_count} target feature(s) were selected."
+            )
+        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
+        arcpy.management.SelectLayerByLocation(
+            embedding_layer, "INTERSECT", target_layer, None, "NEW_SELECTION"
+        )
+        cell_count = int(arcpy.management.GetCount(embedding_layer)[0])
+        if cell_count < 6:
+            raise arcpy.ExecuteError(
+                "The selected example target features must intersect at least 6 unique embedding cells; "
+                f"{cell_count} cell(s) were selected."
+            )
+        arcpy.management.CopyFeatures(embedding_layer, query_features)
+        messages.addMessage(
+            f"Using {target_count} sampled target feature(s) and {cell_count} intersecting "
+            "embedding cell(s) as similarity examples."
+        )
+        return query_features
+    except Exception:
+        if arcpy.Exists(query_features):
+            arcpy.management.Delete(query_features)
+        raise
+    finally:
+        for layer in (target_layer, embedding_layer):
+            if arcpy.Exists(layer):
+                arcpy.management.Delete(layer)
 
 
 def _create_road_damage_queries(
