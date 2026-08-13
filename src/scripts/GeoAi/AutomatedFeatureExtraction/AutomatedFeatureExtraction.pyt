@@ -28,6 +28,7 @@ EMBEDDING_CHUNK_PIXELS = 20000
 CACHE_FORMAT_VERSION = 1
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
+DUPLICATE_IOU_THRESHOLD = 0.85
 EMBEDDING_MODELS = {
     "EO-DINO (Default; Multisensor/RGB)": {
         "item_id": EO_DINO_ITEM_ID,
@@ -242,6 +243,39 @@ FEATURE_PROFILES = {
         "production_geometry": "Polygon",
         "minimum_area_sqm": 4.0,
         "maximum_gsd_m": 0.3,
+        "nms_overlap": 0.6,
+    },
+    "Forest Cover": {
+        "prompt": "forest canopy",
+        "detection_cell_size": 0.5,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "FOREST_COVER_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 100.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Agricultural Fields": {
+        "prompt": "agricultural field",
+        "detection_cell_size": 0.5,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "AGRICULTURAL_COVER_CANDIDATE",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 100.0,
+        "maximum_gsd_m": 0.5,
+        "nms_overlap": 0.6,
+    },
+    "Park-Like Green Space": {
+        "prompt": "park green space",
+        "detection_cell_size": 0.3,
+        "embedding_grid_size": 11,
+        "regularize": False,
+        "feature_code": "GREEN_SPACE_OBSERVATION",
+        "production_geometry": "Polygon",
+        "minimum_area_sqm": 100.0,
+        "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
     },
     "Utility Poles": {
@@ -4178,20 +4212,15 @@ def _extract_target_features(
         raw_detection_count = int(arcpy.management.GetCount(raw_features)[0])
         messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
 
-        messages.addMessage("Applying nonmaximum suppression to extracted features...")
         messages.addMessage(
-            f"Using the {FEATURE_PROFILES[feature_type]['nms_overlap']:.0%} profile overlap threshold "
-            "so adjacent candidates are retained."
+            f"Removing only near-duplicate masks at {DUPLICATE_IOU_THRESHOLD:.0%} IoU; "
+            "partially overlapping features are retained."
         )
-        arcpy.ia.NonMaximumSuppression(
-            in_featureclass=raw_features,
-            confidence_score_field="Confidence",
-            out_featureclass=nms_features,
-            class_value_field="Class",
-            max_overlap_ratio=FEATURE_PROFILES[feature_type]["nms_overlap"],
+        _remove_near_duplicate_polygons(
+            raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
         )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
-        messages.addMessage(f"SAM3 detections after NMS: {detection_count}")
+        messages.addMessage(f"SAM3 detections after duplicate removal: {detection_count}")
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
             _regularize_building_footprints(
@@ -4213,6 +4242,55 @@ def _extract_target_features(
             f"SAM3 did not extract any {feature_type.lower()} in the area of interest."
         )
     return target_features
+
+
+def _remove_near_duplicate_polygons(
+    input_features, output_features, iou_threshold, scratch_workspace,
+):
+    ranked_features = []
+    with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
+        for object_id, geometry, confidence in cursor:
+            if geometry and not geometry.isEmpty:
+                ranked_features.append((object_id, geometry, float(confidence or 0)))
+    ranked_features.sort(key=lambda feature: (-feature[2], feature[0]))
+
+    retained_geometries = []
+    retained_ids = []
+    for object_id, geometry, _ in ranked_features:
+        geometry_area = geometry.getArea("GEODESIC", "SQUAREMETERS")
+        is_duplicate = False
+        for retained_geometry, retained_area in retained_geometries:
+            if geometry.disjoint(retained_geometry):
+                continue
+            intersection = geometry.intersect(retained_geometry, 4)
+            intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")
+            union_area = geometry_area + retained_area - intersection_area
+            if union_area and intersection_area / union_area >= iou_threshold:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            retained_ids.append(object_id)
+            retained_geometries.append((geometry, geometry_area))
+
+    if not retained_ids:
+        raise arcpy.ExecuteError("No valid polygon detections were available for duplicate removal.")
+    keep_field = "AFE_KEEP_MASK"
+    selected_features = arcpy.CreateUniqueName("deduplicated_polygons", scratch_workspace)
+    try:
+        arcpy.management.AddField(input_features, keep_field, "SHORT")
+        retained_id_set = set(retained_ids)
+        with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
+            for object_id, _ in cursor:
+                cursor.updateRow([object_id, int(object_id in retained_id_set)])
+        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
+        arcpy.management.MakeFeatureLayer(
+            input_features, selected_features, f"{field_delimiter} = 1"
+        )
+        arcpy.management.CopyFeatures(selected_features, output_features)
+        arcpy.management.DeleteField(output_features, keep_field)
+    finally:
+        if arcpy.Exists(selected_features):
+            arcpy.management.Delete(selected_features)
 
 
 def _prepare_extraction_raster(source_imagery, messages):
