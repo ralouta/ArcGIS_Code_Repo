@@ -662,6 +662,7 @@ class AutomatedFeatureExtraction(object):
                 target_features, out_features, profile, candidate_context, messages
             )
             if generated_target_features and arcpy.Exists(generated_target_features):
+                _remove_dataset_from_active_map(generated_target_features)
                 arcpy.management.Delete(generated_target_features)
             return
         self._execute_similarity(
@@ -742,6 +743,7 @@ class AutomatedFeatureExtraction(object):
             if not parameters[self.KEEP_INTERMEDIATE].value:
                 for dataset in (out_similar, generated_embeddings, generated_target_features):
                     if dataset and arcpy.Exists(dataset):
+                        _remove_dataset_from_active_map(dataset)
                         arcpy.management.Delete(dataset)
                 parameters[self.OUT_SIMILAR].value = None
                 if generated_embeddings:
@@ -803,6 +805,24 @@ def _dataset_label(dataset):
         return str(dataset)
 
 
+def _remove_dataset_from_active_map(dataset):
+    """Remove active-map layers that reference an intermediate dataset."""
+    try:
+        active_map = arcpy.mp.ArcGISProject("CURRENT").activeMap
+        target_path = os.path.normcase(os.path.normpath(_dataset_label(dataset)))
+    except Exception:
+        return
+    if active_map is None:
+        return
+    for layer in active_map.listLayers():
+        try:
+            layer_path = os.path.normcase(os.path.normpath(layer.dataSource))
+        except Exception:
+            continue
+        if layer_path == target_path:
+            active_map.removeLayer(layer)
+
+
 def _publish_candidate_features(input_features, output_features, profile, context, messages):
     """Atomically publish an auditable candidate layer without discarding QA failures."""
     output_workspace = _geodatabase_workspace(output_features)
@@ -844,8 +864,8 @@ def _publish_candidate_features(input_features, output_features, profile, contex
             for row in cursor:
                 geometry = row[0]
                 area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
-                if not geometry or geometry.isEmpty:
-                    qc_status, qc_reason = "Rejected", "Empty or null geometry"
+                if not geometry or area_sqm <= 0:
+                    qc_status, qc_reason = "Rejected", "Empty, null, or zero-area geometry"
                 elif area_sqm < minimum_area:
                     qc_status = "Rejected"
                     qc_reason = f"Area below profile minimum of {minimum_area:g} square meters"
@@ -4250,7 +4270,7 @@ def _remove_near_duplicate_polygons(
     ranked_features = []
     with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
         for object_id, geometry, confidence in cursor:
-            if geometry and not geometry.isEmpty:
+            if geometry and geometry.getArea("GEODESIC", "SQUAREMETERS") > 0:
                 ranked_features.append((object_id, geometry, float(confidence or 0)))
     ranked_features.sort(key=lambda feature: (-feature[2], feature[0]))
 
