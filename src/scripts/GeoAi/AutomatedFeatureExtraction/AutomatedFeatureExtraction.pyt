@@ -28,8 +28,7 @@ EMBEDDING_CHUNK_PIXELS = 20000
 CACHE_FORMAT_VERSION = 1
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
-NMS_OVERLAP_RATIO = 0.95
-DUPLICATE_IOU_THRESHOLD = NMS_OVERLAP_RATIO
+DUPLICATE_IOU_THRESHOLD = 0.95
 BUILDING_ENVELOPE_MIN_CHILDREN = 3
 BUILDING_ENVELOPE_MIN_COVERAGE = 0.02
 BUILDING_ENVELOPE_MAX_COVERAGE = 0.80
@@ -4402,29 +4401,14 @@ def _extract_target_features(
         messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
 
         messages.addMessage(
-            f"Applying ArcGIS nonmaximum suppression at {NMS_OVERLAP_RATIO:.0%} overlap; "
-            "partially overlapping masks are retained."
+            f"Removing only near-identical masks at {DUPLICATE_IOU_THRESHOLD:.0%} IoU; "
+            "all other overlapping candidates are retained."
         )
-        try:
-            arcpy.ia.NonMaximumSuppression(
-                in_featureclass=raw_features,
-                confidence_score_field="Confidence",
-                out_featureclass=nms_features,
-                class_value_field="Class",
-                max_overlap_ratio=NMS_OVERLAP_RATIO,
-            )
-        except Exception as error:
-            messages.addWarningMessage(
-                f"ArcGIS nonmaximum suppression was unavailable ({error}); using the "
-                "equivalent custom near-duplicate filter."
-            )
-            if arcpy.Exists(nms_features):
-                arcpy.management.Delete(nms_features)
-            _remove_near_duplicate_polygons(
-                raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
-            )
+        _remove_near_duplicate_polygons(
+            raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
+        )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
-        messages.addMessage(f"SAM3 detections after high-overlap suppression: {detection_count}")
+        messages.addMessage(f"SAM3 detections after near-duplicate removal: {detection_count}")
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
             rejected_envelope_count = _remove_overgrown_building_masks(
