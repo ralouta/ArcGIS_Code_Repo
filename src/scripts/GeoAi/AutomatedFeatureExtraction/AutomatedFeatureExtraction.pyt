@@ -274,7 +274,6 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 100.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
-        "field_aggregation_m": 1.0,
         "field_hole_fill_sqm": 100.0,
     },
     "Park-Like Green Space": {
@@ -4659,30 +4658,18 @@ def _clean_agricultural_fields(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
     repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
-    aggregated_features = arcpy.CreateUniqueName("field_aggregated", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
-    aggregation_distance = _meters_to_spatial_units(
-        profile["field_aggregation_m"], spatial_reference
-    )
     hole_fill_area = _square_meters_to_spatial_units(
         profile["field_hole_fill_sqm"], spatial_reference
     )
     try:
         messages.addMessage(
-            "Running agricultural-field QA: merging touching masks and filling small enclosed gaps..."
+            "Running agricultural-field QA: repairing masks and filling small enclosed gaps..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
-        arcpy.cartography.AggregatePolygons(
-            in_features=repaired_features,
-            out_feature_class=aggregated_features,
-            aggregation_distance=aggregation_distance,
-            minimum_area=0,
-            minimum_hole_size=hole_fill_area,
-            orthogonality_option="NON_ORTHOGONAL",
-        )
         arcpy.management.EliminatePolygonPart(
-            in_features=aggregated_features,
+            in_features=repaired_features,
             out_feature_class=cleaned_features,
             condition="AREA",
             part_area=hole_fill_area,
@@ -4694,7 +4681,7 @@ def _clean_agricultural_fields(
             raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
         arcpy.management.CopyFeatures(cleaned_features, output_features)
         messages.addMessage(
-            "Agricultural-field QA completed with 1.0 m fragment merging and 100 sq m enclosed-gap filling."
+            "Agricultural-field QA completed with 100 sq m enclosed-gap filling; separate fields remain separate."
         )
     except Exception as error:
         messages.addWarningMessage(
@@ -4702,7 +4689,7 @@ def _clean_agricultural_fields(
         )
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
-        for dataset in (repaired_features, aggregated_features, cleaned_features):
+        for dataset in (repaired_features, cleaned_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
