@@ -90,6 +90,11 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 25.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
+        "road_aggregation_m": 1.0,
+        "road_smoothing_m": 0.75,
+        "road_hole_fill_sqm": 25.0,
+        "road_direction_gap_m": 30.0,
+        "road_direction_alignment_deg": 25.0,
     },
     "Water Bodies": {
         "prompt": "water body",
@@ -2444,6 +2449,10 @@ def _meters_to_spatial_units(distance_meters, spatial_reference):
     return distance_meters / meters_per_unit
 
 
+def _square_meters_to_spatial_units(area_square_meters, spatial_reference):
+    return _meters_to_spatial_units(1.0, spatial_reference) ** 2 * area_square_meters
+
+
 def _validate_coverage_parameters(moderate_parameter, high_parameter):
     moderate_threshold = (
         float(moderate_parameter.value) if moderate_parameter.value is not None else None
@@ -4365,6 +4374,11 @@ def _extract_target_features(
                 scratch_workspace,
                 messages,
             )
+        elif feature_type == "Roads":
+            _clean_road_surfaces(
+                nms_features, target_features, FEATURE_PROFILES[feature_type],
+                spatial_reference, scratch_workspace, messages,
+            )
         else:
             arcpy.management.CopyFeatures(nms_features, target_features)
     finally:
@@ -4439,6 +4453,223 @@ def _prepare_extraction_raster(source_imagery, messages):
     return _ensure_web_mercator_raster(
         source_imagery, "Feature extraction imagery", messages
     )
+
+
+def _clean_road_surfaces(
+    input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
+):
+    repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
+    directional_connectors = arcpy.CreateUniqueName("road_directional_connectors", scratch_workspace)
+    road_inputs = arcpy.CreateUniqueName("road_qa_inputs", scratch_workspace)
+    aggregated_features = arcpy.CreateUniqueName("road_aggregated", scratch_workspace)
+    hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
+    smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
+    aggregation_distance = _meters_to_spatial_units(
+        profile["road_aggregation_m"], spatial_reference
+    )
+    smoothing_tolerance = _meters_to_spatial_units(
+        profile["road_smoothing_m"], spatial_reference
+    )
+    hole_fill_area = _square_meters_to_spatial_units(
+        profile["road_hole_fill_sqm"], spatial_reference
+    )
+    try:
+        messages.addMessage(
+            "Running road-surface QA: repairing masks, bridging small occlusion gaps, "
+            "filling small enclosed holes, and smoothing pixel stair-steps..."
+        )
+        arcpy.management.CopyFeatures(input_features, repaired_features)
+        arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(repaired_features)[0]):
+            raise arcpy.ExecuteError("Road QA repair produced no valid polygon masks.")
+        connector_count = _create_directional_road_connectors(
+            repaired_features,
+            directional_connectors,
+            profile,
+            spatial_reference,
+            scratch_workspace,
+        )
+        road_qa_inputs = [repaired_features]
+        if connector_count:
+            road_qa_inputs.append(directional_connectors)
+            messages.addMessage(
+                f"Added {connector_count:,} direction-aligned inferred road connector(s) "
+                "across short occlusions."
+            )
+        arcpy.management.Merge(road_qa_inputs, road_inputs)
+        arcpy.cartography.AggregatePolygons(
+            in_features=road_inputs,
+            out_feature_class=aggregated_features,
+            aggregation_distance=aggregation_distance,
+            minimum_area=0,
+            minimum_hole_size=hole_fill_area,
+            orthogonality_option="NON_ORTHOGONAL",
+        )
+        arcpy.management.EliminatePolygonPart(
+            in_features=aggregated_features,
+            out_feature_class=hole_filled_features,
+            condition="AREA",
+            part_area=hole_fill_area,
+            part_area_percent="0",
+            part_option="CONTAINED_ONLY",
+        )
+        arcpy.cartography.SmoothPolygon(
+            in_features=hole_filled_features,
+            out_feature_class=smoothed_features,
+            algorithm="PAEK",
+            tolerance=smoothing_tolerance,
+            endpoint_option="FIXED_ENDPOINT",
+            error_option="RESOLVE_ERRORS",
+        )
+        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(smoothed_features)[0]):
+            raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
+        arcpy.management.CopyFeatures(smoothed_features, output_features)
+        messages.addMessage(
+            "Road-surface QA completed with direction-aware gap reconstruction, 1.0 m "
+            "local gap bridging, 25 sq m enclosed-hole filling, and 0.75 m boundary smoothing."
+        )
+    except Exception as error:
+        messages.addWarningMessage(
+            f"Road-surface QA could not complete ({error}); retaining original road detections."
+        )
+        arcpy.management.CopyFeatures(input_features, output_features)
+    finally:
+        for dataset in (
+            repaired_features, directional_connectors, road_inputs, aggregated_features,
+            hole_filled_features, smoothed_features,
+        ):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+
+
+def _create_directional_road_connectors(
+    road_features, output_connectors, profile, spatial_reference, scratch_workspace,
+):
+    """Build narrow candidate corridors only between strongly aligned road-mask ends."""
+    bounding_rectangles = arcpy.CreateUniqueName("road_direction_rectangles", scratch_workspace)
+    maximum_gap = _meters_to_spatial_units(profile["road_direction_gap_m"], spatial_reference)
+    minimum_axis_alignment = math.cos(math.radians(profile["road_direction_alignment_deg"]))
+    segment_endpoints = []
+    try:
+        arcpy.management.MinimumBoundingGeometry(
+            in_features=road_features,
+            out_feature_class=bounding_rectangles,
+            geometry_type="RECTANGLE_BY_AREA",
+            group_option="NONE",
+            mbg_fields_option="NO_MBG_FIELDS",
+        )
+        with arcpy.da.SearchCursor(bounding_rectangles, ["SHAPE@"]) as cursor:
+            for source_id, (rectangle,) in enumerate(cursor):
+                endpoints = _rectangle_road_endpoints(rectangle)
+                if endpoints:
+                    first_endpoint, second_endpoint, width = endpoints
+                    segment_endpoints.append((source_id, first_endpoint, second_endpoint, width))
+
+        candidates = []
+        for first_index, (first_id, first_start, first_end, first_width) in enumerate(segment_endpoints):
+            first_axis = _unit_vector(first_start, first_end)
+            if first_axis is None:
+                continue
+            for second_id, second_start, second_end, second_width in segment_endpoints[first_index + 1:]:
+                if first_id == second_id:
+                    continue
+                second_axis = _unit_vector(second_start, second_end)
+                if second_axis is None or abs(_dot_product(first_axis, second_axis)) < minimum_axis_alignment:
+                    continue
+                for first_end_index, first_point in enumerate((first_start, first_end)):
+                    for second_end_index, second_point in enumerate((second_start, second_end)):
+                        gap_vector = _unit_vector(first_point, second_point)
+                        if gap_vector is None:
+                            continue
+                        gap_distance = math.hypot(
+                            second_point.X - first_point.X, second_point.Y - first_point.Y
+                        )
+                        if gap_distance > maximum_gap:
+                            continue
+                        if (
+                            abs(_dot_product(first_axis, gap_vector)) < minimum_axis_alignment
+                            or abs(_dot_product(second_axis, gap_vector)) < minimum_axis_alignment
+                        ):
+                            continue
+                        candidates.append((
+                            gap_distance,
+                            first_id,
+                            first_end_index,
+                            second_id,
+                            second_end_index,
+                            first_point,
+                            second_point,
+                            min(first_width, second_width),
+                        ))
+
+        arcpy.management.CreateFeatureclass(
+            scratch_workspace,
+            os.path.basename(output_connectors),
+            "POLYGON",
+            spatial_reference=spatial_reference,
+        )
+        used_endpoints = set()
+        connector_count = 0
+        with arcpy.da.InsertCursor(output_connectors, ["SHAPE@"]) as cursor:
+            for (_, first_id, first_end_index, second_id, second_end_index,
+                 first_point, second_point, width) in sorted(candidates):
+                first_key = (first_id, first_end_index)
+                second_key = (second_id, second_end_index)
+                if first_key in used_endpoints or second_key in used_endpoints or width <= 0:
+                    continue
+                connection = arcpy.Polyline(
+                    arcpy.Array([first_point, second_point]), spatial_reference
+                ).buffer(width / 2.0)
+                if connection and connection.getArea("GEODESIC", "SQUAREMETERS") > 0:
+                    cursor.insertRow([connection])
+                    used_endpoints.update((first_key, second_key))
+                    connector_count += 1
+        return connector_count
+    finally:
+        if arcpy.Exists(bounding_rectangles):
+            arcpy.management.Delete(bounding_rectangles)
+
+
+def _rectangle_road_endpoints(rectangle):
+    if not rectangle or rectangle.partCount != 1:
+        return None
+    points = [point for point in rectangle.getPart(0) if point]
+    if (
+        len(points) > 1
+        and points[0].X == points[-1].X
+        and points[0].Y == points[-1].Y
+    ):
+        points.pop()
+    if len(points) != 4:
+        return None
+    edges = []
+    for index, point in enumerate(points):
+        next_point = points[(index + 1) % len(points)]
+        edges.append((math.hypot(next_point.X - point.X, next_point.Y - point.Y), point, next_point))
+    short_edges = sorted(edges, key=lambda edge: edge[0])[:2]
+    if not short_edges[0][0] or not short_edges[1][0]:
+        return None
+    endpoints = []
+    for _, first_point, second_point in short_edges:
+        endpoints.append(arcpy.Point(
+            (first_point.X + second_point.X) / 2.0,
+            (first_point.Y + second_point.Y) / 2.0,
+        ))
+    return endpoints[0], endpoints[1], (short_edges[0][0] + short_edges[1][0]) / 2.0
+
+
+def _unit_vector(first_point, second_point):
+    delta_x = second_point.X - first_point.X
+    delta_y = second_point.Y - first_point.Y
+    length = math.hypot(delta_x, delta_y)
+    if not length:
+        return None
+    return delta_x / length, delta_y / length
+
+
+def _dot_product(first_vector, second_vector):
+    return first_vector[0] * second_vector[0] + first_vector[1] * second_vector[1]
 
 def _regularize_building_footprints(
     input_features,
