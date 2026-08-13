@@ -4363,7 +4363,7 @@ def _extract_target_features(
 ):
     raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
-    building_features = arcpy.CreateUniqueName("sam3_building_candidates", scratch_workspace)
+    qa_features = arcpy.CreateUniqueName("sam3_qa_candidates", scratch_workspace)
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
         f"{_output_name_prefix(output_features)}_{safe_feature_type}", output_workspace
@@ -4409,18 +4409,18 @@ def _extract_target_features(
         )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
         messages.addMessage(f"SAM3 detections after near-duplicate removal: {detection_count}")
+        rejected_envelope_count = _remove_overgrown_polygon_masks(
+            nms_features, qa_features, scratch_workspace
+        )
+        if rejected_envelope_count:
+            messages.addMessage(
+                f"Rejected {rejected_envelope_count:,} broad polygon mask(s) that enclosed "
+                "multiple distinct smaller detections."
+            )
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
-            rejected_envelope_count = _remove_overgrown_building_masks(
-                nms_features, building_features, scratch_workspace
-            )
-            if rejected_envelope_count:
-                messages.addMessage(
-                    f"Rejected {rejected_envelope_count:,} broad building mask(s) "
-                    "that enclosed multiple distinct smaller detections."
-                )
             _regularize_building_footprints(
-                building_features,
+                qa_features,
                 target_features,
                 spatial_reference,
                 scratch_workspace,
@@ -4428,13 +4428,13 @@ def _extract_target_features(
             )
         elif feature_type == "Roads":
             _clean_road_surfaces(
-                nms_features, target_features, FEATURE_PROFILES[feature_type],
+                qa_features, target_features, FEATURE_PROFILES[feature_type],
                 spatial_reference, scratch_workspace, messages,
             )
         else:
-            arcpy.management.CopyFeatures(nms_features, target_features)
+            arcpy.management.CopyFeatures(qa_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features, building_features):
+        for dataset in (raw_features, nms_features, qa_features):
             if arcpy.Exists(dataset):
                 _remove_dataset_from_active_map(dataset)
                 arcpy.management.Delete(dataset)
@@ -4495,8 +4495,8 @@ def _remove_near_duplicate_polygons(
             arcpy.management.Delete(selected_features)
 
 
-def _remove_overgrown_building_masks(input_features, output_features, scratch_workspace):
-    """Reject broad masks that substantially enclose multiple distinct roof detections."""
+def _remove_overgrown_polygon_masks(input_features, output_features, scratch_workspace):
+    """Reject broad masks that substantially enclose multiple distinct smaller masks."""
     candidates = []
     with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
         for object_id, geometry, confidence in cursor:
@@ -4539,8 +4539,8 @@ def _remove_overgrown_building_masks(input_features, output_features, scratch_wo
         if distinct_masks and BUILDING_ENVELOPE_MIN_COVERAGE <= coverage <= BUILDING_ENVELOPE_MAX_COVERAGE:
             rejected_ids.add(object_id)
 
-    keep_field = "AFE_KEEP_BUILDING"
-    selected_features = arcpy.CreateUniqueName("building_mask_selection", scratch_workspace)
+    keep_field = "AFE_KEEP_POLYGON"
+    selected_features = arcpy.CreateUniqueName("polygon_mask_selection", scratch_workspace)
     try:
         arcpy.management.AddField(input_features, keep_field, "SHORT")
         with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
