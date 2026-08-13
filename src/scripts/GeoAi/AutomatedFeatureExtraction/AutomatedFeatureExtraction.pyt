@@ -1141,9 +1141,13 @@ def _find_classified_similar_features(
             class_output = arcpy.CreateUniqueName("class_similar", scratch_workspace)
             try:
                 arcpy.management.CopyFeatures(sample_layer, class_samples)
+                messages.addMessage(
+                    f"Preparing similarity evidence for class '{value}' "
+                    f"({index} of {len(class_values)})..."
+                )
                 query_features = _select_feature_embedding_queries(
                     embedding_features, target_features, class_samples,
-                    scratch_workspace, messages,
+                    scratch_workspace, messages, value,
                 )
                 messages.addMessage(f"Finding matches for class '{value}' ({index} of {len(class_values)})...")
                 arcpy.geoai.FindSimilarFeaturesUsingEmbeddings(
@@ -4903,6 +4907,7 @@ def _select_embedding_queries(
 
 def _select_feature_embedding_queries(
     embedding_features, target_features, sample_points, scratch_workspace, messages,
+    class_value=None,
 ):
     target_layer = arcpy.CreateUniqueName("classification_target_selection")
     embedding_layer = arcpy.CreateUniqueName("classification_embedding_selection")
@@ -4913,10 +4918,16 @@ def _select_feature_embedding_queries(
             target_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
         )
         target_count = int(arcpy.management.GetCount(target_layer)[0])
+        point_count = int(arcpy.management.GetCount(sample_points)[0])
+        class_label = f"Class '{class_value}'" if class_value is not None else "Examples"
+        messages.addMessage(
+            f"{class_label}: {point_count} example point(s) selected "
+            f"{target_count} intersecting target feature(s)."
+        )
         if target_count < 6:
             raise arcpy.ExecuteError(
-                "Each class needs example points that intersect at least 6 unique target features; "
-                f"{target_count} target feature(s) were selected."
+                f"{class_label} needs example points that intersect at least 6 unique "
+                f"target features; {point_count} point(s) selected {target_count} target feature(s)."
             )
         arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
         arcpy.management.SelectLayerByLocation(
