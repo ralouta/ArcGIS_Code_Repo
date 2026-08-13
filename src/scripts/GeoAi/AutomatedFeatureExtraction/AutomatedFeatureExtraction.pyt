@@ -28,10 +28,11 @@ EMBEDDING_CHUNK_PIXELS = 20000
 CACHE_FORMAT_VERSION = 1
 SAM3_ITEM_ID = "37ef2e1ba0c042ce99501f56295ec0d4"
 EO_DINO_ITEM_ID = "93e8b9ad20734fe7a1641e46385535fc"
-DUPLICATE_IOU_THRESHOLD = 0.85
-BUILDING_ENVELOPE_MIN_COVERAGE = 0.10
-BUILDING_ENVELOPE_MAX_COVERAGE = 0.65
-BUILDING_ENVELOPE_CONFIDENCE_MARGIN = 0.03
+NMS_OVERLAP_RATIO = 0.95
+DUPLICATE_IOU_THRESHOLD = NMS_OVERLAP_RATIO
+BUILDING_ENVELOPE_MIN_CHILDREN = 3
+BUILDING_ENVELOPE_MIN_COVERAGE = 0.02
+BUILDING_ENVELOPE_MAX_COVERAGE = 0.80
 EMBEDDING_MODELS = {
     "EO-DINO (Default; Multisensor/RGB)": {
         "item_id": EO_DINO_ITEM_ID,
@@ -1127,6 +1128,10 @@ def _find_classified_similar_features(
     class_values.sort(key=lambda value: str(value).casefold())
     if not class_values:
         raise arcpy.ExecuteError("The selected class field has no populated values.")
+    class_labels = {
+        value: _class_value_label(sample_points, class_field, value)
+        for value in class_values
+    }
     sample_layer = arcpy.CreateUniqueName("classified_example_points", scratch_workspace)
     class_outputs = []
     try:
@@ -1134,6 +1139,7 @@ def _find_classified_similar_features(
         field_delimiter = arcpy.AddFieldDelimiters(sample_points, class_field)
         field_type = next(field.type for field in arcpy.ListFields(sample_points) if field.name == class_field)
         for index, value in enumerate(class_values, start=1):
+            class_label = class_labels[value]
             where_clause = f"{field_delimiter} = {_sql_literal(value, field_type)}"
             arcpy.management.SelectLayerByAttribute(sample_layer, "NEW_SELECTION", where_clause)
             class_samples = arcpy.CreateUniqueName("class_examples", scratch_workspace)
@@ -1142,14 +1148,14 @@ def _find_classified_similar_features(
             try:
                 arcpy.management.CopyFeatures(sample_layer, class_samples)
                 messages.addMessage(
-                    f"Preparing similarity evidence for class '{value}' "
+                    f"Preparing similarity evidence for class '{class_label}' "
                     f"({index} of {len(class_values)})..."
                 )
                 query_features = _select_feature_embedding_queries(
                     embedding_features, target_features, class_samples,
-                    scratch_workspace, messages, value,
+                    scratch_workspace, messages, class_label,
                 )
-                messages.addMessage(f"Finding matches for class '{value}' ({index} of {len(class_values)})...")
+                messages.addMessage(f"Finding matches for class '{class_label}' ({index} of {len(class_values)})...")
                 arcpy.geoai.FindSimilarFeaturesUsingEmbeddings(
                     embedding_features=embedding_features,
                     query_features=query_features,
@@ -1157,7 +1163,7 @@ def _find_classified_similar_features(
                     threshold=threshold,
                 )
                 arcpy.management.AddField(class_output, "AFE_CLASS", "TEXT", field_length=255)
-                arcpy.management.CalculateField(class_output, "AFE_CLASS", repr(str(value)), "PYTHON3")
+                arcpy.management.CalculateField(class_output, "AFE_CLASS", repr(class_label), "PYTHON3")
                 class_outputs.append(class_output)
             finally:
                 for dataset in (class_samples, query_features):
@@ -1266,6 +1272,37 @@ def _sql_literal(value, field_type):
     if field_type in ("SmallInteger", "Integer", "Single", "Double"):
         return str(value)
     return "'{}'".format(str(value).replace("'", "''"))
+
+
+def _class_value_label(feature_class, field_name, value):
+    field = next(
+        (candidate for candidate in arcpy.ListFields(feature_class) if candidate.name == field_name),
+        None,
+    )
+    if not field or not field.domain:
+        return str(value)
+    workspace = _geodatabase_workspace(_dataset_label(feature_class))
+    if not workspace:
+        return str(value)
+    try:
+        domain = next(
+            (candidate for candidate in arcpy.da.ListDomains(workspace) if candidate.name == field.domain),
+            None,
+        )
+        descriptions = getattr(domain, "codedValues", {}) if domain else {}
+        description = descriptions.get(value)
+        if description is None:
+            description = next(
+                (
+                    candidate_description
+                    for code, candidate_description in descriptions.items()
+                    if str(code) == str(value)
+                ),
+                None,
+            )
+        return f"{value} ({description})" if description else str(value)
+    except Exception:
+        return str(value)
 
 
 class AutomatedDamageAssessment(object):
@@ -4365,14 +4402,29 @@ def _extract_target_features(
         messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
 
         messages.addMessage(
-            f"Removing only near-duplicate masks at {DUPLICATE_IOU_THRESHOLD:.0%} IoU; "
-            "partially overlapping features are retained."
+            f"Applying ArcGIS nonmaximum suppression at {NMS_OVERLAP_RATIO:.0%} overlap; "
+            "partially overlapping masks are retained."
         )
-        _remove_near_duplicate_polygons(
-            raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
-        )
+        try:
+            arcpy.ia.NonMaximumSuppression(
+                in_featureclass=raw_features,
+                confidence_score_field="Confidence",
+                out_featureclass=nms_features,
+                class_value_field="Class",
+                max_overlap_ratio=NMS_OVERLAP_RATIO,
+            )
+        except Exception as error:
+            messages.addWarningMessage(
+                f"ArcGIS nonmaximum suppression was unavailable ({error}); using the "
+                "equivalent custom near-duplicate filter."
+            )
+            if arcpy.Exists(nms_features):
+                arcpy.management.Delete(nms_features)
+            _remove_near_duplicate_polygons(
+                raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
+            )
         detection_count = int(arcpy.management.GetCount(nms_features)[0])
-        messages.addMessage(f"SAM3 detections after duplicate removal: {detection_count}")
+        messages.addMessage(f"SAM3 detections after high-overlap suppression: {detection_count}")
 
         if FEATURE_PROFILES[feature_type]["regularize"]:
             rejected_envelope_count = _remove_overgrown_building_masks(
@@ -4380,8 +4432,8 @@ def _extract_target_features(
             )
             if rejected_envelope_count:
                 messages.addMessage(
-                    f"Rejected {rejected_envelope_count:,} low-confidence building mask(s) "
-                    "that enclosed multiple distinct higher-confidence detections."
+                    f"Rejected {rejected_envelope_count:,} broad building mask(s) "
+                    "that enclosed multiple distinct smaller detections."
                 )
             _regularize_building_footprints(
                 building_features,
@@ -4460,7 +4512,7 @@ def _remove_near_duplicate_polygons(
 
 
 def _remove_overgrown_building_masks(input_features, output_features, scratch_workspace):
-    """Reject broad low-confidence envelopes around multiple separate roof detections."""
+    """Reject broad masks that substantially enclose multiple distinct roof detections."""
     candidates = []
     with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
         for object_id, geometry, confidence in cursor:
@@ -4469,10 +4521,10 @@ def _remove_overgrown_building_masks(input_features, output_features, scratch_wo
                 candidates.append((object_id, geometry, area, float(confidence or 0)))
 
     rejected_ids = set()
-    for object_id, geometry, area, confidence in candidates:
+    for object_id, geometry, area, _ in candidates:
         contained_masks = []
-        for other_id, other_geometry, other_area, other_confidence in candidates:
-            if other_id == object_id or other_area >= area or other_confidence < confidence + BUILDING_ENVELOPE_CONFIDENCE_MARGIN:
+        for other_id, other_geometry, other_area, _ in candidates:
+            if other_id == object_id or other_area >= area * 0.5:
                 continue
             if geometry.disjoint(other_geometry):
                 continue
@@ -4480,9 +4532,20 @@ def _remove_overgrown_building_masks(input_features, output_features, scratch_wo
             intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")
             if intersection_area / other_area >= 0.80:
                 contained_masks.append((other_geometry, intersection_area))
-        if len(contained_masks) < 2:
+        if len(contained_masks) < BUILDING_ENVELOPE_MIN_CHILDREN:
             continue
-        covered_area = sum(intersection_area for _, intersection_area in contained_masks)
+        covered_geometry = None
+        for contained_geometry, _ in contained_masks:
+            overlap_geometry = geometry.intersect(contained_geometry, 4)
+            covered_geometry = (
+                overlap_geometry
+                if covered_geometry is None
+                else covered_geometry.union(overlap_geometry)
+            )
+        covered_area = (
+            covered_geometry.getArea("GEODESIC", "SQUAREMETERS")
+            if covered_geometry else 0.0
+        )
         coverage = covered_area / area
         distinct_masks = any(
             first_geometry.disjoint(second_geometry)
