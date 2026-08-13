@@ -703,20 +703,37 @@ class AutomatedFeatureExtraction(object):
             _validate_gpu_memory(gpu_id, messages)
             source, extent, spatial_reference = _resolve_similarity_source(parameters, aoi, messages)
             selected_model = EMBEDDING_MODELS[parameters[self.ONLINE_EMBEDDING_MODEL].valueAsText]
-            model = _resolve_model(parameters[self.EMBEDDING_MODEL].valueAsText, selected_model["item_id"], selected_model["file_name"], messages)
+            custom_model = parameters[self.EMBEDDING_MODEL].valueAsText
+            model = _resolve_model(custom_model, selected_model["item_id"], selected_model["file_name"], messages)
+            model_signature = _embedding_model_signature(
+                model, selected_model["item_id"], bool(custom_model)
+            )
             candidate_context["source_image"] = _dataset_label(source)
-            candidate_context["model_id"] = selected_model["item_id"]
+            candidate_context["model_id"] = model_signature
             candidate_context["model_file"] = model
             grid_size = int(parameters[self.GRID_SIZE].value or FEATURE_PROFILES[feature_type]["embedding_grid_size"])
             source = _ensure_web_mercator_raster(source, "Similarity analysis imagery", messages)
-            out_embeddings = arcpy.CreateUniqueName(
-                f"{_output_name_prefix(out_features)}_Embeddings", output_workspace
+            out_embeddings = _find_compatible_embeddings(
+                output_workspace, _dataset_label(source), model_signature,
+                grid_size, arcpy.Describe(source).spatialReference, extent,
             )
-            generated_embeddings = out_embeddings
-            _generate_embeddings(
-                source, out_embeddings, model, int(parameters[self.BATCH_SIZE].value or 4), grid_size,
-                gpu_id, extent, spatial_reference, arcpy.Describe(source).spatialReference, None, messages,
-            )
+            if out_embeddings:
+                messages.addMessage(
+                    f"Reusing compatible embeddings from the output geodatabase: {out_embeddings}"
+                )
+            else:
+                out_embeddings = arcpy.CreateUniqueName(
+                    f"{_output_name_prefix(out_features)}_Embeddings", output_workspace
+                )
+                generated_embeddings = out_embeddings
+                _generate_embeddings(
+                    source, out_embeddings, model, int(parameters[self.BATCH_SIZE].value or 4), grid_size,
+                    gpu_id, extent, spatial_reference, arcpy.Describe(source).spatialReference, None, messages,
+                )
+                _write_embedding_signature(
+                    out_embeddings, _dataset_label(source), model_signature,
+                    grid_size, arcpy.Describe(source).spatialReference,
+                )
         parameters[self.OUT_EMBEDDINGS].value = out_embeddings
         try:
             out_similar = arcpy.CreateUniqueName(
@@ -821,6 +838,85 @@ def _dataset_label(dataset):
         return arcpy.Describe(dataset).catalogPath
     except Exception:
         return str(dataset)
+
+
+def _spatial_reference_key(spatial_reference):
+    factory_code = getattr(spatial_reference, "factoryCode", 0)
+    return str(factory_code or getattr(spatial_reference, "name", ""))
+
+
+def _embedding_model_signature(model_path, online_item_id, is_custom_model):
+    if not is_custom_model:
+        return online_item_id
+    model_stat = os.stat(model_path)
+    signature_input = f"{os.path.abspath(model_path)}|{model_stat.st_size}|{model_stat.st_mtime_ns}"
+    return hashlib.sha256(signature_input.encode("utf-8")).hexdigest()
+
+
+def _extent_contains(container_extent, requested_extent, tolerance=1e-6):
+    return (
+        container_extent.XMin <= requested_extent.XMin + tolerance
+        and container_extent.YMin <= requested_extent.YMin + tolerance
+        and container_extent.XMax >= requested_extent.XMax - tolerance
+        and container_extent.YMax >= requested_extent.YMax - tolerance
+    )
+
+
+def _write_embedding_signature(embedding_features, source_image, model_item_id, grid_size, spatial_reference):
+    signature_fields = (
+        ("AFE_EMB_SOURCE", "TEXT", 1000),
+        ("AFE_EMB_MODEL", "TEXT", 64),
+        ("AFE_EMB_GRID", "LONG", None),
+        ("AFE_EMB_CRS", "TEXT", 128),
+    )
+    existing_fields = {field.name.upper() for field in arcpy.ListFields(embedding_features)}
+    for field_name, field_type, field_length in signature_fields:
+        if field_name.upper() not in existing_fields:
+            add_kwargs = {"field_name": field_name, "field_type": field_type}
+            if field_length:
+                add_kwargs["field_length"] = field_length
+            arcpy.management.AddField(embedding_features, **add_kwargs)
+    values = (source_image, model_item_id, int(grid_size), _spatial_reference_key(spatial_reference))
+    with arcpy.da.UpdateCursor(
+        embedding_features, [field_name for field_name, _, _ in signature_fields]
+    ) as cursor:
+        for _ in cursor:
+            cursor.updateRow(values)
+
+
+def _find_compatible_embeddings(
+    workspace, source_image, model_item_id, grid_size, spatial_reference, requested_extent,
+):
+    required_fields = ("AFE_EMB_SOURCE", "AFE_EMB_MODEL", "AFE_EMB_GRID", "AFE_EMB_CRS")
+    source_key = os.path.normcase(os.path.normpath(source_image))
+    spatial_reference_key = _spatial_reference_key(spatial_reference)
+    try:
+        for directory, _, feature_classes in arcpy.da.Walk(workspace, datatype="FeatureClass"):
+            for feature_class_name in feature_classes:
+                feature_class = os.path.join(directory, feature_class_name)
+                if not _has_embedding_field(feature_class):
+                    continue
+                field_names = {field.name.upper() for field in arcpy.ListFields(feature_class)}
+                if not all(field_name in field_names for field_name in required_fields):
+                    continue
+                with arcpy.da.SearchCursor(feature_class, required_fields) as cursor:
+                    signature = next(cursor, None)
+                if not signature:
+                    continue
+                candidate_source, candidate_model, candidate_grid, candidate_crs = signature
+                if (
+                    not candidate_source
+                    or os.path.normcase(os.path.normpath(candidate_source)) != source_key
+                    or candidate_model != model_item_id
+                    or candidate_grid != int(grid_size)
+                    or candidate_crs != spatial_reference_key
+                ):
+                    continue
+                if _extent_contains(arcpy.Describe(feature_class).extent, requested_extent):
+                    return feature_class
+    except Exception:
+        return None
+    return None
 
 
 def _remove_dataset_from_active_map(dataset):

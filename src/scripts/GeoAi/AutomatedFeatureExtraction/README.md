@@ -16,7 +16,7 @@ The derived similar-features output keeps class-specific evidence in `AFE_CLASS`
 
 Feature Extraction uses an active-map raster layer or a World Imagery Wayback release. Similarity workflows use an active-map raster layer, Current World Imagery, a Wayback release, or existing embeddings with a BLOB embedding field. Provide an AOI polygon or set the Processing Extent environment for imagery processing.
 
-The tool downloads and caches Living Atlas SAM3 and the selected embedding model when a local `.dlpk` is not supplied. It supports EO-DINO, DINOv2, and DINOv3 embedding packages.
+The tool downloads and caches Living Atlas SAM3 and the selected embedding model when a local `.dlpk` is not supplied. It supports EO-DINO, DINOv2, and DINOv3 embedding packages. Retained embeddings created by the current toolbox are automatically discovered and reused across feature types when their signed source imagery, model, grid size, coordinate system, and coverage match the requested analysis. Older or unsigned embeddings can still be selected manually through **Existing Embeddings**.
 
 ## Outputs
 
