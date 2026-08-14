@@ -10,8 +10,12 @@ def clean_road_surfaces(
 ):
     repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
     road_inputs = arcpy.CreateUniqueName("road_qa_inputs", scratch_workspace)
+    aggregated_features = arcpy.CreateUniqueName("road_aggregated", scratch_workspace)
     hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
     smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
+    aggregation_distance = meters_to_spatial_units(
+        profile["road_aggregation_m"], spatial_reference
+    )
     smoothing_tolerance = meters_to_spatial_units(
         profile["road_smoothing_m"], spatial_reference
     )
@@ -20,8 +24,8 @@ def clean_road_surfaces(
     )
     try:
         messages.addMessage(
-            "Running road-surface QA: repairing masks, bridging small occlusion gaps, "
-            "filling small enclosed holes, and smoothing pixel stair-steps..."
+            "Running road-surface QA: repairing masks, preserving disconnected "
+            "surfaces, filling tiny enclosed holes, and smoothing pixel stair-steps..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
@@ -34,8 +38,19 @@ def clean_road_surfaces(
             messages.addMessage(
                 f"Rejected {rejected_mask_count:,} small or implausibly compact road mask(s)."
             )
+        if aggregation_distance > 0:
+            arcpy.cartography.AggregatePolygons(
+                in_features=road_inputs,
+                out_feature_class=aggregated_features,
+                aggregation_distance=aggregation_distance,
+                minimum_area=0,
+                minimum_hole_size=hole_fill_area,
+                orthogonality_option="NON_ORTHOGONAL",
+            )
+        else:
+            arcpy.management.CopyFeatures(road_inputs, aggregated_features)
         arcpy.management.EliminatePolygonPart(
-            in_features=road_inputs,
+            in_features=aggregated_features,
             out_feature_class=hole_filled_features,
             condition="AREA",
             part_area=hole_fill_area,
@@ -55,8 +70,13 @@ def clean_road_surfaces(
             raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
         arcpy.management.CopyFeatures(smoothed_features, output_features)
         messages.addMessage(
-            "Road-surface QA retained separate SAM3 masks, removed small and implausibly "
-            "compact masks, filled 25 sq m enclosed holes, and applied 0.75 m smoothing."
+            "Road-surface QA preserved disconnected masks, removed small and "
+            "implausibly compact masks, filled {0:g} sq m enclosed holes, and "
+            "applied {1:g} m smoothing."
+            .format(
+                profile["road_hole_fill_sqm"],
+                profile["road_smoothing_m"],
+            )
         )
     except Exception as error:
         messages.addWarningMessage(
@@ -65,7 +85,8 @@ def clean_road_surfaces(
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
         for dataset in (
-            repaired_features, road_inputs, hole_filled_features, smoothed_features,
+            repaired_features, road_inputs, aggregated_features, hole_filled_features,
+            smoothed_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)

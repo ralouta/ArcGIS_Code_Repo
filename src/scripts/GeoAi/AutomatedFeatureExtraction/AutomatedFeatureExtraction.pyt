@@ -26,13 +26,20 @@ from classification_workflow import (
     find_classified_similar_features as _find_classified_similar_features_impl,
 )
 from embedding_runtime import (
-    embedding_checkpoint_workspace as _embedding_checkpoint_workspace_impl,
+    embedding_checkpoint_workspace as _embedding_checkpoint_workspace,
     generate_embeddings_with_model as _generate_embeddings_with_model,
     has_embedding_field as _has_embedding_field,
     merge_embedding_chunks as _merge_embedding_chunks_impl,
     release_gpu_memory as _release_gpu_memory,
     valid_embedding_output as _valid_embedding_output,
 )
+from feature_extraction import extract_target_features as _extract_target_features_impl
+from query_selection import (
+    select_damage_queries as _select_damage_queries,
+    select_embedding_queries as _select_embedding_queries,
+    select_feature_embedding_queries as _select_feature_embedding_queries,
+)
+from damage_classification import run_damage_classification as _run_damage_classification_impl
 from validation_helpers import (
     geodatabase_workspace as _geodatabase_workspace,
     meters_to_spatial_units as _meters_to_spatial_units,
@@ -122,9 +129,9 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 25.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
-        "road_aggregation_m": 1.0,
-        "road_smoothing_m": 0.75,
-        "road_hole_fill_sqm": 25.0,
+        "road_aggregation_m": 0.0,
+        "road_smoothing_m": 0.25,
+        "road_hole_fill_sqm": 2.0,
         "road_direction_gap_m": 30.0,
         "road_direction_alignment_deg": 25.0,
     },
@@ -1945,6 +1952,7 @@ class AutomatedDamageAssessment(object):
                 batch_size,
                 gpu_id,
                 output_workspace,
+                out_classified,
                 scratch_workspace,
                 messages,
             )
@@ -2663,7 +2671,7 @@ def _generate_embeddings(
     chunk_workspace = None
     chunk_raster_folder = None
     if use_chunks:
-        chunk_workspace = _embedding_checkpoint_workspace_impl(
+        chunk_workspace = _embedding_checkpoint_workspace(
             image_service_cache["cache_root"],
             model,
             grid_size,
@@ -3971,205 +3979,22 @@ def _extract_target_features(
     scratch_workspace,
     messages,
 ):
-    raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
-    nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
-    qa_features = arcpy.CreateUniqueName("sam3_qa_candidates", scratch_workspace)
-    safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
-    target_features = arcpy.CreateUniqueName(
-        f"{_output_name_prefix(output_features)}_{safe_feature_type}", output_workspace
+    return _extract_target_features_impl(
+        source_imagery, analysis_extent, spatial_reference, feature_type, prompt, sam_model,
+        cell_size, batch_size, gpu_id, output_workspace, output_features, scratch_workspace,
+        messages,
+        output_name_prefix=_output_name_prefix,
+        meters_to_spatial_units=_meters_to_spatial_units,
+        prepare_extraction_raster=_prepare_extraction_raster,
+        feature_profile=FEATURE_PROFILES[feature_type],
+        duplicate_iou_threshold=DUPLICATE_IOU_THRESHOLD,
+        envelope_min_children=BUILDING_ENVELOPE_MIN_CHILDREN,
+        envelope_min_coverage=BUILDING_ENVELOPE_MIN_COVERAGE,
+        envelope_max_coverage=BUILDING_ENVELOPE_MAX_COVERAGE,
+        regularize_building_footprints=_regularize_building_footprints,
+        clean_road_surfaces=_clean_road_surfaces,
+        clean_agricultural_fields=_clean_agricultural_fields,
     )
-    cell_size_units = _meters_to_spatial_units(cell_size, spatial_reference)
-
-    try:
-        messages.addMessage(f"Detecting {feature_type.lower()} with SAM3...")
-        extraction_raster = _prepare_extraction_raster(source_imagery, messages)
-        with arcpy.EnvManager(
-            gpuId=gpu_id,
-            extent=analysis_extent,
-            cellSize=cell_size_units,
-            processorType="GPU",
-            outputCoordinateSystem=spatial_reference,
-        ):
-            arcpy.ia.DetectObjectsUsingDeepLearning(
-                in_raster=extraction_raster,
-                out_detected_objects=raw_features,
-                in_model_definition=sam_model,
-                arguments=(
-                    f"text_prompt {prompt};padding 128;batch_size {batch_size};"
-                    "box_nms_thresh 0.5;points_per_batch 64;"
-                    "stability_score_thresh 0.35;min_mask_region_area 0"
-                ),
-                run_nms="NO_NMS",
-                confidence_score_field="Confidence",
-                class_value_field="Class",
-                max_overlap_ratio=0,
-                processing_mode="PROCESS_AS_MOSAICKED_IMAGE",
-                use_pixelspace="NO_PIXELSPACE",
-                in_objects_of_interest=None,
-            )
-        raw_detection_count = int(arcpy.management.GetCount(raw_features)[0])
-        messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
-
-        messages.addMessage(
-            f"Removing only near-identical masks at {DUPLICATE_IOU_THRESHOLD:.0%} IoU; "
-            "all other overlapping candidates are retained."
-        )
-        _remove_near_duplicate_polygons(
-            raw_features, nms_features, DUPLICATE_IOU_THRESHOLD, scratch_workspace
-        )
-        detection_count = int(arcpy.management.GetCount(nms_features)[0])
-        messages.addMessage(f"SAM3 detections after near-duplicate removal: {detection_count}")
-        rejected_envelope_count = _remove_overgrown_polygon_masks(
-            nms_features, qa_features, scratch_workspace
-        )
-        if rejected_envelope_count:
-            messages.addMessage(
-                f"Rejected {rejected_envelope_count:,} broad polygon mask(s) that enclosed "
-                "multiple distinct smaller detections."
-            )
-
-        if FEATURE_PROFILES[feature_type]["regularize"]:
-            _regularize_building_footprints(
-                qa_features,
-                target_features,
-                spatial_reference,
-                scratch_workspace,
-                messages,
-            )
-        elif feature_type == "Roads":
-            _clean_road_surfaces(
-                qa_features, target_features, FEATURE_PROFILES[feature_type],
-                spatial_reference, scratch_workspace, messages,
-            )
-        elif feature_type == "Agricultural Fields":
-            _clean_agricultural_fields(
-                qa_features, target_features, FEATURE_PROFILES[feature_type],
-                spatial_reference, scratch_workspace, messages,
-            )
-        else:
-            arcpy.management.CopyFeatures(qa_features, target_features)
-    finally:
-        for dataset in (raw_features, nms_features, qa_features):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-    if int(arcpy.management.GetCount(target_features)[0]) == 0:
-        raise arcpy.ExecuteError(
-            f"SAM3 did not extract any {feature_type.lower()} in the area of interest."
-        )
-    return target_features
-
-
-def _remove_near_duplicate_polygons(
-    input_features, output_features, iou_threshold, scratch_workspace,
-):
-    ranked_features = []
-    with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
-        for object_id, geometry, confidence in cursor:
-            if geometry and geometry.getArea("GEODESIC", "SQUAREMETERS") > 0:
-                ranked_features.append((object_id, geometry, float(confidence or 0)))
-    ranked_features.sort(key=lambda feature: (-feature[2], feature[0]))
-
-    retained_geometries = []
-    retained_ids = []
-    for object_id, geometry, _ in ranked_features:
-        geometry_area = geometry.getArea("GEODESIC", "SQUAREMETERS")
-        is_duplicate = False
-        for retained_geometry, retained_area in retained_geometries:
-            if geometry.disjoint(retained_geometry):
-                continue
-            intersection = geometry.intersect(retained_geometry, 4)
-            intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")
-            union_area = geometry_area + retained_area - intersection_area
-            if union_area and intersection_area / union_area >= iou_threshold:
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            retained_ids.append(object_id)
-            retained_geometries.append((geometry, geometry_area))
-
-    if not retained_ids:
-        raise arcpy.ExecuteError("No valid polygon detections were available for duplicate removal.")
-    keep_field = "AFE_KEEP_MASK"
-    selected_features = arcpy.CreateUniqueName("deduplicated_polygons", scratch_workspace)
-    try:
-        arcpy.management.AddField(input_features, keep_field, "SHORT")
-        retained_id_set = set(retained_ids)
-        with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
-            for object_id, _ in cursor:
-                cursor.updateRow([object_id, int(object_id in retained_id_set)])
-        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
-        arcpy.management.MakeFeatureLayer(
-            input_features, selected_features, f"{field_delimiter} = 1"
-        )
-        arcpy.management.CopyFeatures(selected_features, output_features)
-        arcpy.management.DeleteField(output_features, keep_field)
-    finally:
-        if arcpy.Exists(selected_features):
-            arcpy.management.Delete(selected_features)
-
-
-def _remove_overgrown_polygon_masks(input_features, output_features, scratch_workspace):
-    """Reject broad masks that substantially enclose multiple distinct smaller masks."""
-    candidates = []
-    with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
-        for object_id, geometry, confidence in cursor:
-            area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
-            if area > 0:
-                candidates.append((object_id, geometry, area, float(confidence or 0)))
-
-    rejected_ids = set()
-    for object_id, geometry, area, _ in candidates:
-        contained_masks = []
-        for other_id, other_geometry, other_area, _ in candidates:
-            if other_id == object_id or other_area >= area * 0.5:
-                continue
-            if geometry.disjoint(other_geometry):
-                continue
-            intersection = geometry.intersect(other_geometry, 4)
-            intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")
-            if intersection_area / other_area >= 0.80:
-                contained_masks.append((other_geometry, intersection_area))
-        if len(contained_masks) < BUILDING_ENVELOPE_MIN_CHILDREN:
-            continue
-        covered_geometry = None
-        for contained_geometry, _ in contained_masks:
-            overlap_geometry = geometry.intersect(contained_geometry, 4)
-            covered_geometry = (
-                overlap_geometry
-                if covered_geometry is None
-                else covered_geometry.union(overlap_geometry)
-            )
-        covered_area = (
-            covered_geometry.getArea("GEODESIC", "SQUAREMETERS")
-            if covered_geometry else 0.0
-        )
-        coverage = covered_area / area
-        distinct_masks = any(
-            first_geometry.disjoint(second_geometry)
-            for index, (first_geometry, _) in enumerate(contained_masks)
-            for second_geometry, _ in contained_masks[index + 1:]
-        )
-        if distinct_masks and BUILDING_ENVELOPE_MIN_COVERAGE <= coverage <= BUILDING_ENVELOPE_MAX_COVERAGE:
-            rejected_ids.add(object_id)
-
-    keep_field = "AFE_KEEP_POLYGON"
-    selected_features = arcpy.CreateUniqueName("polygon_mask_selection", scratch_workspace)
-    try:
-        arcpy.management.AddField(input_features, keep_field, "SHORT")
-        with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
-            for object_id, _ in cursor:
-                cursor.updateRow([object_id, int(object_id not in rejected_ids)])
-        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
-        arcpy.management.MakeFeatureLayer(
-            input_features, selected_features, f"{field_delimiter} = 1"
-        )
-        arcpy.management.CopyFeatures(selected_features, output_features)
-        arcpy.management.DeleteField(output_features, keep_field)
-    finally:
-        if arcpy.Exists(selected_features):
-            arcpy.management.Delete(selected_features)
-    return len(rejected_ids)
 
 
 def _prepare_extraction_raster(source_imagery, messages):
@@ -4182,252 +4007,6 @@ def _prepare_extraction_raster(source_imagery, messages):
     return _ensure_web_mercator_raster(
         source_imagery, "Feature extraction imagery", messages
     )
-
-
-def _select_damage_queries(
-    target_features,
-    sample_points,
-    feature_type,
-    scratch_workspace,
-    messages,
-):
-    if feature_type == "Roads":
-        return _create_road_damage_queries(
-            target_features, sample_points, scratch_workspace, messages
-        )
-
-    target_layer = arcpy.CreateUniqueName("damage_target_selection")
-    query_features = arcpy.CreateUniqueName("damage_queries", scratch_workspace)
-    try:
-        arcpy.management.MakeFeatureLayer(target_features, target_layer)
-        arcpy.management.SelectLayerByLocation(
-            target_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
-        )
-        selected_count = int(arcpy.management.GetCount(target_layer)[0])
-        if selected_count < 6:
-            raise arcpy.ExecuteError(
-                "Damage example points must intersect at least 6 unique target features; "
-                f"{selected_count} unique feature(s) were selected."
-            )
-        arcpy.management.CopyFeatures(target_layer, query_features)
-        messages.addMessage(
-            f"Using {selected_count} target features as post-event damage examples."
-        )
-    finally:
-        if arcpy.Exists(target_layer):
-            arcpy.management.Delete(target_layer)
-    return query_features
-
-
-def _select_embedding_queries(
-    embedding_features, sample_points, scratch_workspace, messages
-):
-    embedding_layer = arcpy.CreateUniqueName("embedding_query_selection")
-    query_features = arcpy.CreateUniqueName("embedding_queries", scratch_workspace)
-    try:
-        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
-        arcpy.management.SelectLayerByLocation(
-            embedding_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
-        )
-        selected_count = int(arcpy.management.GetCount(embedding_layer)[0])
-        if selected_count < 6:
-            raise arcpy.ExecuteError(
-                "Example points must intersect at least 6 unique embedding cells; "
-                f"{selected_count} cell(s) were selected."
-            )
-        arcpy.management.CopyFeatures(embedding_layer, query_features)
-        messages.addMessage(
-            f"Using {selected_count} embedding cell(s) as similarity examples."
-        )
-        return query_features
-    except Exception:
-        if arcpy.Exists(query_features):
-            arcpy.management.Delete(query_features)
-        raise
-    finally:
-        if arcpy.Exists(embedding_layer):
-            arcpy.management.Delete(embedding_layer)
-
-
-def _select_feature_embedding_queries(
-    embedding_features, target_features, sample_points, scratch_workspace, messages,
-    class_value=None, is_road=False,
-):
-    if is_road:
-        return _select_road_feature_embedding_queries(
-            embedding_features, target_features, sample_points, scratch_workspace, messages,
-            class_value,
-        )
-    target_layer = arcpy.CreateUniqueName("classification_target_selection")
-    embedding_layer = arcpy.CreateUniqueName("classification_embedding_selection")
-    query_features = arcpy.CreateUniqueName("classification_embedding_queries", scratch_workspace)
-    seed_features = arcpy.CreateUniqueName("classification_target_seeds", scratch_workspace)
-    try:
-        arcpy.management.MakeFeatureLayer(target_features, target_layer)
-        arcpy.management.SelectLayerByLocation(
-            target_layer, "INTERSECT", sample_points, None, "NEW_SELECTION"
-        )
-        target_count = int(arcpy.management.GetCount(target_layer)[0])
-        point_count = int(arcpy.management.GetCount(sample_points)[0])
-        class_label = f"Class '{class_value}'" if class_value is not None else "Examples"
-        messages.addMessage(
-            f"{class_label}: {point_count} example point(s) selected "
-            f"{target_count} intersecting target feature(s)."
-        )
-        if target_count < 6:
-            raise arcpy.ExecuteError(
-                f"{class_label} needs example points that intersect at least 6 unique "
-                f"target features; {point_count} point(s) selected {target_count} target feature(s)."
-            )
-        arcpy.management.CopyFeatures(target_layer, seed_features)
-        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
-        arcpy.management.SelectLayerByLocation(
-            embedding_layer, "INTERSECT", target_layer, None, "NEW_SELECTION"
-        )
-        cell_count = int(arcpy.management.GetCount(embedding_layer)[0])
-        if cell_count < 6:
-            raise arcpy.ExecuteError(
-                "The selected example target features must intersect at least 6 unique embedding cells; "
-                f"{cell_count} cell(s) were selected."
-            )
-        arcpy.management.CopyFeatures(embedding_layer, query_features)
-        messages.addMessage(
-            f"Using {target_count} sampled target feature(s) and {cell_count} intersecting "
-            "embedding cell(s) as similarity examples."
-        )
-        return query_features, seed_features
-    except Exception:
-        for dataset in (query_features, seed_features):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-        raise
-    finally:
-        for layer in (target_layer, embedding_layer):
-            if arcpy.Exists(layer):
-                arcpy.management.Delete(layer)
-
-
-def _select_road_feature_embedding_queries(
-    embedding_features, target_features, sample_points, scratch_workspace, messages, class_value,
-):
-    sample_layer = arcpy.CreateUniqueName("road_classification_samples")
-    target_layer = arcpy.CreateUniqueName("road_classification_targets")
-    embedding_layer = arcpy.CreateUniqueName("road_classification_embeddings")
-    sample_regions = arcpy.CreateUniqueName("road_classification_regions", scratch_workspace)
-    query_features = arcpy.CreateUniqueName("road_embedding_queries", scratch_workspace)
-    seed_features = arcpy.CreateUniqueName("road_target_seeds", scratch_workspace)
-    class_label = f"Class '{class_value}'" if class_value is not None else "Road examples"
-    try:
-        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
-        sample_count = int(arcpy.management.GetCount(sample_layer)[0])
-        if sample_count < 6:
-            raise arcpy.ExecuteError(
-                f"{class_label} needs at least 6 example points; "
-                f"{sample_count} point(s) were provided."
-            )
-        arcpy.management.SelectLayerByLocation(
-            sample_layer, "WITHIN_A_DISTANCE", target_features, "10 Meters", "NEW_SELECTION"
-        )
-        nearby_count = int(arcpy.management.GetCount(sample_layer)[0])
-        if nearby_count < sample_count:
-            messages.addWarningMessage(
-                f"{class_label}: {sample_count - nearby_count} example point(s) are more than "
-                "10 meters from an inferred road. They remain in the embedding query because "
-                "SAM3 road masks are candidate evidence, not ground truth."
-            )
-        arcpy.management.SelectLayerByAttribute(sample_layer, "CLEAR_SELECTION")
-        arcpy.analysis.PairwiseBuffer(sample_layer, sample_regions, "10 Meters", dissolve_option="NONE")
-        arcpy.management.MakeFeatureLayer(target_features, target_layer)
-        arcpy.management.SelectLayerByLocation(target_layer, "INTERSECT", sample_regions, None, "NEW_SELECTION")
-        arcpy.management.CopyFeatures(target_layer, seed_features)
-        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
-        arcpy.management.SelectLayerByLocation(embedding_layer, "INTERSECT", sample_regions, None, "NEW_SELECTION")
-        cell_count = int(arcpy.management.GetCount(embedding_layer)[0])
-        if cell_count < 6:
-            raise arcpy.ExecuteError(
-                f"{class_label} needs at least 6 intersecting embedding cells; {cell_count} cell(s) were selected."
-            )
-        arcpy.management.CopyFeatures(embedding_layer, query_features)
-        messages.addMessage(
-            f"{class_label}: using {sample_count} point-centered road region(s) and "
-            f"{cell_count} embedding cell(s) as similarity examples."
-        )
-        return query_features, seed_features
-    except Exception:
-        for dataset in (query_features, seed_features):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-        raise
-    finally:
-        for dataset in (sample_layer, target_layer, embedding_layer, sample_regions):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-
-def _create_road_damage_queries(
-    target_features, sample_points, scratch_workspace, messages
-):
-    sample_count = int(arcpy.management.GetCount(sample_points)[0])
-    if sample_count < 6:
-        raise arcpy.ExecuteError(
-            "Road damage examples require at least 6 point features; "
-            f"{sample_count} point feature(s) were provided."
-        )
-
-    sample_layer = arcpy.CreateUniqueName("road_damage_sample_qa")
-    query_features = arcpy.CreateUniqueName("road_damage_queries", scratch_workspace)
-    try:
-        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
-        arcpy.management.SelectLayerByLocation(
-            sample_layer, "INTERSECT", target_features, None, "NEW_SELECTION"
-        )
-        intersecting_count = int(arcpy.management.GetCount(sample_layer)[0])
-
-        arcpy.management.SelectLayerByLocation(
-            sample_layer,
-            "WITHIN_A_DISTANCE",
-            target_features,
-            "10 Meters",
-            "NEW_SELECTION",
-        )
-        valid_count = int(arcpy.management.GetCount(sample_layer)[0])
-        nearby_count = valid_count - intersecting_count
-        rejected_count = sample_count - valid_count
-
-        messages.addMessage(
-            "Road sample QA: "
-            f"{intersecting_count} on inferred roads, "
-            f"{nearby_count} within 10 meters, "
-            f"{rejected_count} farther away."
-        )
-        if rejected_count:
-            messages.addWarningMessage(
-                f"Ignored {rejected_count} road damage point(s) more than 10 meters "
-                "from an inferred road."
-            )
-        if valid_count < 6:
-            raise arcpy.ExecuteError(
-                "At least 6 road damage points must intersect or be within 10 meters "
-                f"of an inferred road; {valid_count} valid point(s) remain."
-            )
-
-        arcpy.analysis.PairwiseBuffer(
-            in_features=sample_layer,
-            out_feature_class=query_features,
-            buffer_distance_or_field="10 Meters",
-            dissolve_option="NONE",
-        )
-        messages.addMessage(
-            f"Using {valid_count} point-centered road regions as post-event damage examples."
-        )
-        return query_features
-    except Exception:
-        if arcpy.Exists(query_features):
-            arcpy.management.Delete(query_features)
-        raise
-    finally:
-        if arcpy.Exists(sample_layer):
-            arcpy.management.Delete(sample_layer)
 
 
 def _recommend_grid_size(target_features, post_image, feature_type):
@@ -4591,187 +4170,11 @@ def _run_damage_classification(
     search_radius,
     messages,
 ):
-    messages.addMessage(f"Damage Assessment classifier version {TOOL_VERSION}")
-    messages.addMessage("Counting similar-embedding features for each target feature...")
-    field_mappings = _build_field_mappings(target_features)
-    arcpy.analysis.SpatialJoin(
-        target_features=target_features,
-        join_features=similar_features,
-        out_feature_class=output_features,
-        join_operation="JOIN_ONE_TO_ONE",
-        join_type="KEEP_ALL",
-        field_mapping=field_mappings,
-        match_option=match_option,
-        search_radius=search_radius,
-    )
-    count_before_repair = int(arcpy.management.GetCount(output_features)[0])
-    messages.addMessage("Repairing output target geometries...")
-    arcpy.management.RepairGeometry(output_features, "DELETE_NULL", "ESRI")
-    count_after_repair = int(arcpy.management.GetCount(output_features)[0])
-    removed_by_repair = count_before_repair - count_after_repair
-    if removed_by_repair:
-        messages.addWarningMessage(
-            f"Repair Geometry removed {removed_by_repair} feature(s) with null geometry."
-        )
-
-    _add_output_fields(output_features)
-    arcpy.management.CalculateGeometryAttributes(
+    _run_damage_classification_impl(
+        target_features,
+        similar_features,
         output_features,
-        [["BLDG_AREA", "AREA_GEODESIC"]],
-        area_unit="SQUARE_METERS",
+        moderate_coverage_threshold,
+        high_coverage_threshold, match_option, search_radius, messages, TOOL_VERSION,
+        OUTPUT_FIELD_NAMES,
     )
-
-    invalid_area_oids = []
-    with arcpy.da.UpdateCursor(output_features, ["OID@", "BLDG_AREA"]) as cursor:
-        for object_id, area_sqm in cursor:
-            if area_sqm is None or area_sqm <= 0:
-                invalid_area_oids.append(object_id)
-                cursor.deleteRow()
-
-    if invalid_area_oids:
-        object_id_preview = ", ".join(str(object_id) for object_id in invalid_area_oids[:20])
-        if len(invalid_area_oids) > 20:
-            object_id_preview += ", ..."
-        messages.addWarningMessage(
-            "Excluded {0} feature(s) with empty or zero-area geometry. "
-            "Output object IDs before deletion: {1}".format(
-                len(invalid_area_oids), object_id_preview
-            )
-        )
-
-    messages.addMessage("Calculating embedding coverage within each target feature...")
-    overlap_areas = _calculate_overlap_areas(output_features, similar_features, messages)
-
-    class_totals = {
-        NO_MATCH_EVIDENCE: 0,
-        LOW_EVIDENCE: 0,
-        MODERATE_EVIDENCE: 0,
-        HIGH_EVIDENCE: 0,
-    }
-    fields = [
-        "Join_Count",
-        "BLDG_AREA",
-        "DMG_BID",
-        "DMG_CLASS",
-        "MATCH_CNT",
-        "DMG_AREA",
-        "COVER_PCT",
-    ]
-    with arcpy.da.UpdateCursor(output_features, fields) as cursor:
-        for row in cursor:
-            count = row[0] or 0
-            area_sqm = row[1]
-            damage_area_sqm = overlap_areas.get(row[2], 0.0)
-            coverage_percent = min(100.0, (damage_area_sqm / area_sqm) * 100.0)
-            damage_class = _classify_coverage(
-                coverage_percent,
-                moderate_coverage_threshold,
-                high_coverage_threshold,
-            )
-
-            row[3] = damage_class
-            row[4] = count
-            row[5] = damage_area_sqm
-            row[6] = coverage_percent
-            cursor.updateRow(row)
-            class_totals[damage_class] += 1
-
-    messages.addMessage(
-        "Coverage thresholds: no matching evidence = 0%; low damage = >0% to <{0:.1f}%; "
-        "moderate damage = {0:.1f}% to <{1:.1f}%; high damage >= {1:.1f}%.".format(
-            moderate_coverage_threshold,
-            high_coverage_threshold,
-        )
-    )
-    for damage_class in (
-        NO_MATCH_EVIDENCE,
-        LOW_EVIDENCE,
-        MODERATE_EVIDENCE,
-        HIGH_EVIDENCE,
-    ):
-        messages.addMessage(f"{damage_class}: {class_totals[damage_class]} features")
-
-    messages.addWarningMessage(
-        "These classes indicate relative image evidence, not confirmed structural damage. "
-        "No Matching Damage Evidence may also mean the feature is outside the embedding analysis extent. "
-        "Validate Moderate and High Damage Evidence against post-event imagery or field observations."
-    )
-
-
-def _classify_coverage(coverage_percent, moderate_threshold, high_threshold):
-    if coverage_percent <= 0:
-        return NO_MATCH_EVIDENCE
-    if coverage_percent >= high_threshold:
-        return HIGH_EVIDENCE
-    if coverage_percent >= moderate_threshold:
-        return MODERATE_EVIDENCE
-    return LOW_EVIDENCE
-
-
-def _calculate_overlap_areas(buildings, similar_features, messages):
-    scratch_workspace = arcpy.env.scratchGDB
-    intersections = arcpy.CreateUniqueName("damage_intersections", scratch_workspace)
-    dissolved = arcpy.CreateUniqueName("damage_overlap_dissolved", scratch_workspace)
-    overlap_areas = {}
-
-    try:
-        arcpy.analysis.PairwiseIntersect(
-            [buildings, similar_features], intersections, "ALL", None, "INPUT"
-        )
-        if int(arcpy.management.GetCount(intersections)[0]) == 0:
-            messages.addWarningMessage("No embedding polygons overlap the building polygons.")
-            return overlap_areas
-
-        arcpy.management.Dissolve(intersections, dissolved, "DMG_BID")
-        arcpy.management.AddField(dissolved, "DMG_AREA", "DOUBLE")
-        arcpy.management.CalculateGeometryAttributes(
-            dissolved,
-            [["DMG_AREA", "AREA_GEODESIC"]],
-            area_unit="SQUARE_METERS",
-        )
-        with arcpy.da.SearchCursor(dissolved, ["DMG_BID", "DMG_AREA"]) as cursor:
-            for building_id, damage_area_sqm in cursor:
-                overlap_areas[building_id] = damage_area_sqm or 0.0
-    finally:
-        for dataset in (intersections, dissolved):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-    return overlap_areas
-
-
-def _build_field_mappings(buildings):
-    field_mappings = arcpy.FieldMappings()
-    field_mappings.addTable(buildings)
-
-    for index in range(field_mappings.fieldCount - 1, -1, -1):
-        field_name = field_mappings.getFieldMap(index).outputField.name.upper()
-        if field_name in OUTPUT_FIELD_NAMES:
-            field_mappings.removeFieldMap(index)
-
-    return field_mappings
-
-
-def _add_output_fields(feature_class):
-    existing_fields = {field.name.upper() for field in arcpy.ListFields(feature_class)}
-    field_definitions = [
-        ("DMG_CLASS", "TEXT", 30),
-        ("MATCH_CNT", "LONG", None),
-        ("DMG_BID", "LONG", None),
-        ("BLDG_AREA", "DOUBLE", None),
-        ("DMG_AREA", "DOUBLE", None),
-        ("COVER_PCT", "DOUBLE", None),
-    ]
-
-    for field_name, field_type, field_length in field_definitions:
-        if field_name in existing_fields:
-            continue
-        if field_type == "TEXT":
-            arcpy.management.AddField(
-                feature_class, field_name, field_type, field_length=field_length
-            )
-        else:
-            arcpy.management.AddField(feature_class, field_name, field_type)
-
-    oid_field = arcpy.Describe(feature_class).OIDFieldName
-    arcpy.management.CalculateField(feature_class, "DMG_BID", f"!{oid_field}!")
