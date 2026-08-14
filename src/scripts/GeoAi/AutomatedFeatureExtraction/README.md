@@ -18,6 +18,10 @@ Feature Extraction uses an active-map raster layer or a World Imagery Wayback re
 
 The tool downloads and caches Living Atlas SAM3 and the selected embedding model when a local `.dlpk` is not supplied. It supports EO-DINO, DINOv2, and DINOv3 embedding packages. Retained embeddings created by the current toolbox are automatically discovered and reused across feature types when their signed source imagery, model, grid size, coordinate system, and coverage match the requested analysis. Older or unsigned embeddings can still be selected manually through **Existing Embeddings**.
 
+## Code Structure
+
+`AutomatedFeatureExtraction.pyt` remains the ArcGIS Pro toolbox entry point and workflow coordinator. Shared ArcPy parameter construction lives in `parameter_helpers.py`; field, workspace, unit, and coverage validation lives in `validation_helpers.py`. New reusable toolbox behavior should be added to a focused Python module rather than expanding the entry point.
+
 ## Outputs
 
 **Output Features** is the main result: candidate polygons for Feature Extraction, matching embedding cells for Embedding Similarity, or classified target polygons for Feature Classification. It is an auditable candidate layer, never an automatically accepted authoritative topographic update. Every output records `AFE_RUN_ID`, `FEATURE_CODE`, `FEATURE_TYPE`, `GEOM_ROLE`, `QC_STATUS`, `QC_REASON`, `TOOL_VERSION`, `PROFILE_VER`, `SOURCE_IMAGE`, `MODEL_ITEM_ID`, `MODEL_FILE`, `RUN_UTC`, and `AREA_SQM`.

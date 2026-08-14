@@ -15,6 +15,18 @@ import urllib.request
 
 import arcpy
 
+from parameter_helpers import feature_parameter, numeric_parameter, string_parameter
+from validation_helpers import (
+    geodatabase_workspace as _geodatabase_workspace,
+    meters_to_spatial_units as _meters_to_spatial_units,
+    same_dataset as _same_dataset,
+    square_meters_to_spatial_units as _square_meters_to_spatial_units,
+    usable_field_names as _usable_field_names,
+    validate_coverage_parameters as _validate_coverage_parameters,
+    validate_example_class_field as _validate_example_class_field,
+    validate_minimum_example_count as _validate_minimum_example_count,
+)
+
 
 TOOL_VERSION = "5.4.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
@@ -275,6 +287,8 @@ FEATURE_PROFILES = {
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
         "field_hole_fill_sqm": 100.0,
+        "field_fragment_max_sqm": 100.0,
+        "field_smoothing_m": 0.5,
     },
     "Park-Like Green Space": {
         "prompt": "park green space",
@@ -408,32 +422,32 @@ class AutomatedFeatureExtraction(object):
         self._filtered_wayback_releases = None
 
     def getParameterInfo(self):
-        feature_type = _string_parameter(
+        feature_type = string_parameter(
             "Feature Type", "feature_type", "Feature Definition", "Buildings",
             _feature_type_choices(), True,
         )
-        workflow = _string_parameter(
+        workflow = string_parameter(
             "Workflow", "workflow", "Feature Definition", "Feature Extraction",
             ("Feature Extraction", "Embedding Similarity", "Feature Classification"), True,
         )
-        in_target = _feature_parameter(
+        in_target = feature_parameter(
             "Input Features to Classify (Optional)", "in_target_features",
             "Feature Definition", ["Polygon"],
         )
-        aoi = _feature_parameter(
+        aoi = feature_parameter(
             "Area of Interest Polygon (Optional; Overrides Extent)", "in_aoi",
             "Feature Definition", ["Polygon"],
         )
-        extraction_source = _string_parameter(
+        extraction_source = string_parameter(
             "Feature Extraction Imagery Source", "extraction_source",
             "Feature Extraction", "Input Imagery",
             ("Input Imagery", "World Imagery Wayback"), True,
         )
-        extraction_image = _string_parameter(
+        extraction_image = string_parameter(
             "Feature Extraction Imagery Layer (from Active Map)", "in_extraction_imagery",
             "Feature Extraction", None, _get_active_map_raster_layer_names(),
         )
-        extraction_wayback = _string_parameter(
+        extraction_wayback = string_parameter(
             "Feature Extraction World Imagery Wayback Release", "extraction_wayback_release",
             "Feature Extraction", None, (),
         )
@@ -454,27 +468,27 @@ class AutomatedFeatureExtraction(object):
         )
         detection_cell_size.value = FEATURE_PROFILES["Buildings"]["detection_cell_size"]
         detection_cell_size.category = "Feature Extraction"
-        analysis_source = _string_parameter(
+        analysis_source = string_parameter(
             "Similarity Analysis Imagery Source", "analysis_source", "Similarity Analysis",
             "Input Imagery", ("Input Imagery", "Current World Imagery", "World Imagery Wayback"), True,
         )
-        analysis_image = _string_parameter(
+        analysis_image = string_parameter(
             "Similarity Analysis Imagery Layer (from Active Map)", "in_analysis_imagery",
             "Similarity Analysis", None, _get_active_map_raster_layer_names(),
         )
-        analysis_wayback = _string_parameter(
+        analysis_wayback = string_parameter(
             "Similarity Analysis World Imagery Wayback Release", "analysis_wayback_release",
             "Similarity Analysis", None, (),
         )
-        sample_points = _feature_parameter(
+        sample_points = feature_parameter(
             "Classified Example Points (Minimum 6 per Class)", "in_example_points",
             "Similarity Analysis", ["Point", "Multipoint"],
         )
-        class_field = _string_parameter(
+        class_field = string_parameter(
             "Example Class Field", "example_class_field", "Similarity Analysis",
             None, (),
         )
-        online_embedding_model = _string_parameter(
+        online_embedding_model = string_parameter(
             "ArcGIS Online Embedding Model", "online_embedding_model", "Similarity Analysis",
             next(iter(EMBEDDING_MODELS)), list(EMBEDDING_MODELS), True,
         )
@@ -484,10 +498,10 @@ class AutomatedFeatureExtraction(object):
         )
         embedding_model.filter.list = ["dlpk"]
         embedding_model.category = "Similarity Analysis"
-        gpu_id = _numeric_parameter("GPU ID", "gpu_id", "GPLong", "Similarity Analysis", 0)
-        batch_size = _numeric_parameter("Batch Size", "batch_size", "GPLong", "Similarity Analysis", 4)
-        grid_size = _numeric_parameter("Embedding Grid Size (Optional; Blank = Auto)", "grid_size", "GPLong", "Similarity Analysis")
-        similarity_threshold = _numeric_parameter("Similarity Threshold", "similarity_threshold", "GPDouble", "Similarity Analysis", 0.55)
+        gpu_id = numeric_parameter("GPU ID", "gpu_id", "GPLong", "Similarity Analysis", 0)
+        batch_size = numeric_parameter("Batch Size", "batch_size", "GPLong", "Similarity Analysis", 4)
+        grid_size = numeric_parameter("Embedding Grid Size (Optional; Blank = Auto)", "grid_size", "GPLong", "Similarity Analysis")
+        similarity_threshold = numeric_parameter("Similarity Threshold", "similarity_threshold", "GPDouble", "Similarity Analysis", 0.55)
         out_features = arcpy.Parameter(
             displayName="Output Features", name="out_features", datatype="DEFeatureClass",
             parameterType="Required", direction="Output",
@@ -511,7 +525,7 @@ class AutomatedFeatureExtraction(object):
         )
         keep_intermediate.value = True
         keep_intermediate.category = "Outputs"
-        existing_embeddings = _feature_parameter(
+        existing_embeddings = feature_parameter(
             "Existing Embeddings (Optional; Skips Generation)", "in_existing_embeddings",
             "Similarity Analysis", ["Polygon"],
         )
@@ -755,7 +769,7 @@ class AutomatedFeatureExtraction(object):
                 )
                 _find_classified_similar_features(
                     out_embeddings, target_features, sample_points,
-                    parameters[self.CLASS_FIELD].valueAsText, out_similar,
+                    parameters[self.CLASS_FIELD].valueAsText, feature_type, out_similar,
                     seed_evidence, threshold, arcpy.env.scratchGDB, messages,
                 )
             else:
@@ -792,47 +806,6 @@ class AutomatedFeatureExtraction(object):
                 parameters[self.OUT_SIMILAR].value = None
                 if generated_embeddings:
                     parameters[self.OUT_EMBEDDINGS].value = None
-
-
-def _string_parameter(display_name, name, category, value, choices, required=False):
-    parameter = arcpy.Parameter(
-        displayName=display_name,
-        name=name,
-        datatype="GPString",
-        parameterType="Required" if required else "Optional",
-        direction="Input",
-    )
-    parameter.filter.type = "ValueList"
-    parameter.filter.list = list(choices)
-    parameter.value = value
-    parameter.category = category
-    return parameter
-
-
-def _feature_parameter(display_name, name, category, geometry_types):
-    parameter = arcpy.Parameter(
-        displayName=display_name,
-        name=name,
-        datatype="GPFeatureLayer",
-        parameterType="Optional",
-        direction="Input",
-    )
-    parameter.filter.list = geometry_types
-    parameter.category = category
-    return parameter
-
-
-def _numeric_parameter(display_name, name, datatype, category, value=None):
-    parameter = arcpy.Parameter(
-        displayName=display_name,
-        name=name,
-        datatype=datatype,
-        parameterType="Optional",
-        direction="Input",
-    )
-    parameter.value = value
-    parameter.category = category
-    return parameter
 
 
 def _output_name_prefix(output_features):
@@ -998,62 +971,6 @@ def _publish_candidate_features(input_features, output_features, profile, contex
             arcpy.management.Delete(staged_features)
 
 
-def _usable_field_names(feature_class):
-    if not feature_class:
-        return []
-    try:
-        return [
-            field.name
-            for field in arcpy.ListFields(feature_class)
-            if field.type not in ("OID", "Geometry", "Blob", "Raster")
-        ]
-    except Exception:
-        return []
-
-
-def _validate_minimum_example_count(sample_points, parameter):
-    try:
-        count = int(arcpy.management.GetCount(sample_points)[0])
-    except Exception:
-        return
-    if count < 6:
-        parameter.setErrorMessage(
-            f"Provide at least 6 example point features; the selected layer contains {count}."
-        )
-
-
-def _validate_example_class_field(sample_points, class_field, parameter):
-    if not sample_points:
-        return
-    if not class_field:
-        parameter.setErrorMessage(
-            "Choose the field that contains the user-defined example classes."
-        )
-        return
-    if class_field not in _usable_field_names(sample_points):
-        parameter.setErrorMessage("Choose a valid non-system field from the example points.")
-        return
-    try:
-        class_counts = {}
-        with arcpy.da.SearchCursor(sample_points, [class_field]) as cursor:
-            for (value,) in cursor:
-                label = str(value).strip() if value is not None else ""
-                if label:
-                    class_counts[label] = class_counts.get(label, 0) + 1
-        if not class_counts:
-            parameter.setErrorMessage("The selected class field has no populated values.")
-        elif min(class_counts.values()) < 6:
-            insufficient = ", ".join(
-                f"{label} ({count})" for label, count in class_counts.items() if count < 6
-            )
-            parameter.setErrorMessage(
-                "Each class needs at least 6 example points. Insufficient classes: "
-                f"{insufficient}."
-            )
-    except Exception:
-        pass
-
-
 def _resolve_extraction_source(parameters, aoi, messages):
     source_type = parameters[AutomatedFeatureExtraction.EXTRACTION_SOURCE].valueAsText
     if source_type == "Input Imagery":
@@ -1099,7 +1016,7 @@ def _resolve_similarity_source(parameters, aoi, messages):
 
 
 def _find_classified_similar_features(
-    embedding_features, target_features, sample_points, class_field, output_features,
+    embedding_features, target_features, sample_points, class_field, feature_type, output_features,
     seed_output_features, threshold,
     scratch_workspace, messages,
 ):
@@ -1138,7 +1055,7 @@ def _find_classified_similar_features(
                 )
                 query_features, seed_features = _select_feature_embedding_queries(
                     embedding_features, target_features, class_samples,
-                    scratch_workspace, messages, class_label,
+                    scratch_workspace, messages, class_label, feature_type == "Roads",
                 )
                 messages.addMessage(f"Finding matches for class '{class_label}' ({index} of {len(class_values)})...")
                 arcpy.geoai.FindSimilarFeaturesUsingEmbeddings(
@@ -2447,66 +2364,6 @@ def _resolve_analysis_extent(aoi, fallback_dataset, require_explicit_extent):
 
     description = arcpy.Describe(fallback_dataset)
     return description.extent, description.spatialReference, "input target features"
-
-
-def _geodatabase_workspace(dataset_path):
-    match = re.search(r"(?i)^(.+?\.(?:gdb|sde))(?:[\\/].*)?$", dataset_path or "")
-    return match.group(1) if match else None
-
-
-def _same_dataset(first_dataset, second_dataset):
-    if not first_dataset or not second_dataset:
-        return False
-
-    normalized_paths = []
-    for dataset in (first_dataset, second_dataset):
-        try:
-            dataset = arcpy.Describe(dataset).catalogPath
-        except Exception:
-            pass
-        normalized_paths.append(
-            os.path.normcase(os.path.normpath(str(dataset)))
-        )
-    return normalized_paths[0] == normalized_paths[1]
-
-
-def _meters_to_spatial_units(distance_meters, spatial_reference):
-    if not spatial_reference or spatial_reference.type != "Projected":
-        raise arcpy.ExecuteError(
-            "Target features and the area of interest must use a projected coordinate "
-            "system so meter-based cell sizes and footprint tolerances are meaningful."
-        )
-    meters_per_unit = spatial_reference.metersPerUnit
-    if not meters_per_unit or meters_per_unit <= 0:
-        raise arcpy.ExecuteError(
-            "The target coordinate system does not define a valid linear unit."
-        )
-    return distance_meters / meters_per_unit
-
-
-def _square_meters_to_spatial_units(area_square_meters, spatial_reference):
-    return _meters_to_spatial_units(1.0, spatial_reference) ** 2 * area_square_meters
-
-
-def _validate_coverage_parameters(moderate_parameter, high_parameter):
-    moderate_threshold = (
-        float(moderate_parameter.value) if moderate_parameter.value is not None else None
-    )
-    high_threshold = float(high_parameter.value) if high_parameter.value is not None else None
-    if moderate_threshold is not None and not 0 < moderate_threshold < 100:
-        moderate_parameter.setErrorMessage(
-            "Moderate coverage must be greater than 0 and less than 100."
-        )
-    if high_threshold is not None and not 0 < high_threshold <= 100:
-        high_parameter.setErrorMessage(
-            "High coverage must be greater than 0 and at most 100."
-        )
-    if (
-        moderate_threshold is not None
-        and high_threshold is not None
-        and moderate_threshold >= high_threshold
-    ):
-        high_parameter.setErrorMessage("High coverage must be greater than moderate coverage.")
 
 
 def _request_json(url):
@@ -4570,14 +4427,9 @@ def _clean_road_surfaces(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
     repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
-    directional_connectors = arcpy.CreateUniqueName("road_directional_connectors", scratch_workspace)
     road_inputs = arcpy.CreateUniqueName("road_qa_inputs", scratch_workspace)
-    aggregated_features = arcpy.CreateUniqueName("road_aggregated", scratch_workspace)
     hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
     smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
-    aggregation_distance = _meters_to_spatial_units(
-        profile["road_aggregation_m"], spatial_reference
-    )
     smoothing_tolerance = _meters_to_spatial_units(
         profile["road_smoothing_m"], spatial_reference
     )
@@ -4593,31 +4445,15 @@ def _clean_road_surfaces(
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
         if not int(arcpy.management.GetCount(repaired_features)[0]):
             raise arcpy.ExecuteError("Road QA repair produced no valid polygon masks.")
-        connector_count = _create_directional_road_connectors(
-            repaired_features,
-            directional_connectors,
-            profile,
-            spatial_reference,
-            scratch_workspace,
+        rejected_mask_count = _remove_implausible_road_masks(
+            repaired_features, road_inputs, profile, scratch_workspace
         )
-        road_qa_inputs = [repaired_features]
-        if connector_count:
-            road_qa_inputs.append(directional_connectors)
+        if rejected_mask_count:
             messages.addMessage(
-                f"Added {connector_count:,} direction-aligned inferred road connector(s) "
-                "across short occlusions."
+                f"Rejected {rejected_mask_count:,} small or implausibly compact road mask(s)."
             )
-        arcpy.management.Merge(road_qa_inputs, road_inputs)
-        arcpy.cartography.AggregatePolygons(
-            in_features=road_inputs,
-            out_feature_class=aggregated_features,
-            aggregation_distance=aggregation_distance,
-            minimum_area=0,
-            minimum_hole_size=hole_fill_area,
-            orthogonality_option="NON_ORTHOGONAL",
-        )
         arcpy.management.EliminatePolygonPart(
-            in_features=aggregated_features,
+            in_features=road_inputs,
             out_feature_class=hole_filled_features,
             condition="AREA",
             part_area=hole_fill_area,
@@ -4637,8 +4473,8 @@ def _clean_road_surfaces(
             raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
         arcpy.management.CopyFeatures(smoothed_features, output_features)
         messages.addMessage(
-            "Road-surface QA completed with direction-aware gap reconstruction, 1.0 m "
-            "local gap bridging, 25 sq m enclosed-hole filling, and 0.75 m boundary smoothing."
+            "Road-surface QA retained separate SAM3 masks, removed small and implausibly "
+            "compact masks, filled 25 sq m enclosed holes, and applied 0.75 m smoothing."
         )
     except Exception as error:
         messages.addWarningMessage(
@@ -4647,11 +4483,35 @@ def _clean_road_surfaces(
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
         for dataset in (
-            repaired_features, directional_connectors, road_inputs, aggregated_features,
-            hole_filled_features, smoothed_features,
+            repaired_features, road_inputs, hole_filled_features, smoothed_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
+
+
+def _remove_implausible_road_masks(input_features, output_features, profile, scratch_workspace):
+    keep_field = "AFE_ROAD_QA_KEEP"
+    selection_layer = arcpy.CreateUniqueName("road_mask_selection", scratch_workspace)
+    minimum_area = profile["minimum_area_sqm"]
+    rejected_count = 0
+    try:
+        arcpy.management.AddField(input_features, keep_field, "SHORT")
+        with arcpy.da.UpdateCursor(input_features, ["SHAPE@", keep_field]) as cursor:
+            for geometry, _ in cursor:
+                area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
+                perimeter = geometry.getLength("GEODESIC", "METERS") if geometry else 0.0
+                compactness = 4.0 * math.pi * area / perimeter ** 2 if perimeter else 0.0
+                keep_mask = area >= minimum_area and not (area >= 1000.0 and compactness >= 0.70)
+                cursor.updateRow([geometry, int(keep_mask)])
+                rejected_count += int(not keep_mask)
+        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
+        arcpy.management.MakeFeatureLayer(input_features, selection_layer, f"{field_delimiter} = 1")
+        arcpy.management.CopyFeatures(selection_layer, output_features)
+        arcpy.management.DeleteField(output_features, keep_field)
+    finally:
+        if arcpy.Exists(selection_layer):
+            arcpy.management.Delete(selection_layer)
+    return rejected_count
 
 
 def _clean_agricultural_fields(
@@ -4659,12 +4519,20 @@ def _clean_agricultural_fields(
 ):
     repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
+    smoothed_features = arcpy.CreateUniqueName("field_smoothed", scratch_workspace)
     hole_fill_area = _square_meters_to_spatial_units(
         profile["field_hole_fill_sqm"], spatial_reference
     )
+    fragment_area = _square_meters_to_spatial_units(
+        profile["field_fragment_max_sqm"], spatial_reference
+    )
+    smoothing_tolerance = _meters_to_spatial_units(
+        profile["field_smoothing_m"], spatial_reference
+    )
     try:
         messages.addMessage(
-            "Running agricultural-field QA: repairing masks and filling small enclosed gaps..."
+            "Running agricultural-field QA: repairing masks, removing small fragments, "
+            "filling enclosed gaps, and smoothing one-pixel stair-steps..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
@@ -4676,12 +4544,28 @@ def _clean_agricultural_fields(
             part_area_percent="0",
             part_option="CONTAINED_ONLY",
         )
-        arcpy.management.RepairGeometry(cleaned_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(cleaned_features)[0]):
+        arcpy.management.EliminatePolygonPart(
+            in_features=cleaned_features,
+            out_feature_class=smoothed_features,
+            condition="AREA",
+            part_area=fragment_area,
+            part_area_percent="0",
+            part_option="ANY",
+        )
+        arcpy.cartography.SmoothPolygon(
+            in_features=smoothed_features,
+            out_feature_class=output_features,
+            algorithm="PAEK",
+            tolerance=smoothing_tolerance,
+            endpoint_option="FIXED_ENDPOINT",
+            error_option="RESOLVE_ERRORS",
+        )
+        arcpy.management.RepairGeometry(output_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(output_features)[0]):
             raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
-        arcpy.management.CopyFeatures(cleaned_features, output_features)
         messages.addMessage(
-            "Agricultural-field QA completed with 100 sq m enclosed-gap filling; separate fields remain separate."
+            "Agricultural-field QA completed with 100 sq m hole/fragment cleanup and "
+            "0.5 m boundary smoothing; separate fields remain separate."
         )
     except Exception as error:
         messages.addWarningMessage(
@@ -4689,7 +4573,7 @@ def _clean_agricultural_fields(
         )
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
-        for dataset in (repaired_features, cleaned_features):
+        for dataset in (repaired_features, cleaned_features, smoothed_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
@@ -4990,8 +4874,13 @@ def _select_embedding_queries(
 
 def _select_feature_embedding_queries(
     embedding_features, target_features, sample_points, scratch_workspace, messages,
-    class_value=None,
+    class_value=None, is_road=False,
 ):
+    if is_road:
+        return _select_road_feature_embedding_queries(
+            embedding_features, target_features, sample_points, scratch_workspace, messages,
+            class_value,
+        )
     target_layer = arcpy.CreateUniqueName("classification_target_selection")
     embedding_layer = arcpy.CreateUniqueName("classification_embedding_selection")
     query_features = arcpy.CreateUniqueName("classification_embedding_queries", scratch_workspace)
@@ -5039,6 +4928,55 @@ def _select_feature_embedding_queries(
         for layer in (target_layer, embedding_layer):
             if arcpy.Exists(layer):
                 arcpy.management.Delete(layer)
+
+
+def _select_road_feature_embedding_queries(
+    embedding_features, target_features, sample_points, scratch_workspace, messages, class_value,
+):
+    sample_layer = arcpy.CreateUniqueName("road_classification_samples")
+    target_layer = arcpy.CreateUniqueName("road_classification_targets")
+    embedding_layer = arcpy.CreateUniqueName("road_classification_embeddings")
+    sample_regions = arcpy.CreateUniqueName("road_classification_regions", scratch_workspace)
+    query_features = arcpy.CreateUniqueName("road_embedding_queries", scratch_workspace)
+    seed_features = arcpy.CreateUniqueName("road_target_seeds", scratch_workspace)
+    class_label = f"Class '{class_value}'" if class_value is not None else "Road examples"
+    try:
+        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
+        arcpy.management.SelectLayerByLocation(
+            sample_layer, "WITHIN_A_DISTANCE", target_features, "10 Meters", "NEW_SELECTION"
+        )
+        sample_count = int(arcpy.management.GetCount(sample_layer)[0])
+        if sample_count < 6:
+            raise arcpy.ExecuteError(
+                f"{class_label} needs at least 6 points on or within 10 meters of inferred roads; "
+                f"{sample_count} valid point(s) remain."
+            )
+        arcpy.analysis.PairwiseBuffer(sample_layer, sample_regions, "10 Meters", dissolve_option="NONE")
+        arcpy.management.MakeFeatureLayer(target_features, target_layer)
+        arcpy.management.SelectLayerByLocation(target_layer, "INTERSECT", sample_regions, None, "NEW_SELECTION")
+        arcpy.management.CopyFeatures(target_layer, seed_features)
+        arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
+        arcpy.management.SelectLayerByLocation(embedding_layer, "INTERSECT", sample_regions, None, "NEW_SELECTION")
+        cell_count = int(arcpy.management.GetCount(embedding_layer)[0])
+        if cell_count < 6:
+            raise arcpy.ExecuteError(
+                f"{class_label} needs at least 6 intersecting embedding cells; {cell_count} cell(s) were selected."
+            )
+        arcpy.management.CopyFeatures(embedding_layer, query_features)
+        messages.addMessage(
+            f"{class_label}: using {sample_count} valid point-centered road region(s) and "
+            f"{cell_count} embedding cell(s) as similarity examples."
+        )
+        return query_features, seed_features
+    except Exception:
+        for dataset in (query_features, seed_features):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
+        raise
+    finally:
+        for dataset in (sample_layer, target_layer, embedding_layer, sample_regions):
+            if arcpy.Exists(dataset):
+                arcpy.management.Delete(dataset)
 
 
 def _create_road_damage_queries(
