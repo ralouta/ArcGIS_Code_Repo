@@ -20,7 +20,7 @@ The tool downloads and caches Living Atlas SAM3 and the selected embedding model
 
 ## Code Structure
 
-`AutomatedFeatureExtraction.pyt` remains the ArcGIS Pro toolbox entry point and workflow coordinator. Shared ArcPy parameter construction lives in `parameter_helpers.py`; field, workspace, unit, and coverage validation lives in `validation_helpers.py`. New reusable toolbox behavior should be added to a focused Python module rather than expanding the entry point.
+`AutomatedFeatureExtraction.pyt` remains the ArcGIS Pro toolbox entry point and workflow coordinator. Shared ArcPy parameter construction lives in `parameter_helpers.py`; field, workspace, unit, and coverage validation lives in `validation_helpers.py`; and feature-specific geometry cleanup and regularization lives in `feature_geometry.py`. New reusable toolbox behavior should be added to a focused Python module rather than expanding the entry point.
 
 ## Outputs
 

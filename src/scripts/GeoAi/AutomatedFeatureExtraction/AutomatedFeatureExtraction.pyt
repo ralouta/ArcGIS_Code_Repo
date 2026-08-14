@@ -16,6 +16,23 @@ import urllib.request
 import arcpy
 
 from parameter_helpers import feature_parameter, numeric_parameter, string_parameter
+from feature_geometry import (
+    clean_agricultural_fields as _clean_agricultural_fields,
+    clean_road_surfaces as _clean_road_surfaces,
+    regularize_building_footprints as _regularize_building_footprints,
+)
+from classification_workflow import (
+    classify_target_features as _classify_target_features_impl,
+    find_classified_similar_features as _find_classified_similar_features_impl,
+)
+from embedding_runtime import (
+    embedding_checkpoint_workspace as _embedding_checkpoint_workspace_impl,
+    generate_embeddings_with_model as _generate_embeddings_with_model,
+    has_embedding_field as _has_embedding_field,
+    merge_embedding_chunks as _merge_embedding_chunks_impl,
+    release_gpu_memory as _release_gpu_memory,
+    valid_embedding_output as _valid_embedding_output,
+)
 from validation_helpers import (
     geodatabase_workspace as _geodatabase_workspace,
     meters_to_spatial_units as _meters_to_spatial_units,
@@ -1020,159 +1037,18 @@ def _find_classified_similar_features(
     seed_output_features, threshold,
     scratch_workspace, messages,
 ):
-    class_values = []
-    with arcpy.da.SearchCursor(sample_points, [class_field]) as cursor:
-        for (value,) in cursor:
-            if value is not None and str(value).strip() and value not in class_values:
-                class_values.append(value)
-    class_values.sort(key=lambda value: str(value).casefold())
-    if not class_values:
-        raise arcpy.ExecuteError("The selected class field has no populated values.")
-    class_labels = {
-        value: _class_value_label(sample_points, class_field, value)
-        for value in class_values
-    }
-    sample_layer = arcpy.CreateUniqueName("classified_example_points", scratch_workspace)
-    class_outputs = []
-    seed_outputs = []
-    try:
-        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
-        field_delimiter = arcpy.AddFieldDelimiters(sample_points, class_field)
-        field_type = next(field.type for field in arcpy.ListFields(sample_points) if field.name == class_field)
-        for index, value in enumerate(class_values, start=1):
-            class_label = class_labels[value]
-            where_clause = f"{field_delimiter} = {_sql_literal(value, field_type)}"
-            arcpy.management.SelectLayerByAttribute(sample_layer, "NEW_SELECTION", where_clause)
-            class_samples = arcpy.CreateUniqueName("class_examples", scratch_workspace)
-            query_features = None
-            seed_features = None
-            class_output = arcpy.CreateUniqueName("class_similar", scratch_workspace)
-            try:
-                arcpy.management.CopyFeatures(sample_layer, class_samples)
-                messages.addMessage(
-                    f"Preparing similarity evidence for class '{class_label}' "
-                    f"({index} of {len(class_values)})..."
-                )
-                query_features, seed_features = _select_feature_embedding_queries(
-                    embedding_features, target_features, class_samples,
-                    scratch_workspace, messages, class_label, feature_type == "Roads",
-                )
-                messages.addMessage(f"Finding matches for class '{class_label}' ({index} of {len(class_values)})...")
-                arcpy.geoai.FindSimilarFeaturesUsingEmbeddings(
-                    embedding_features=embedding_features,
-                    query_features=query_features,
-                    out_embeddings_feature_class=class_output,
-                    threshold=threshold,
-                )
-                arcpy.management.AddField(class_output, "AFE_CLASS", "TEXT", field_length=255)
-                arcpy.management.CalculateField(class_output, "AFE_CLASS", repr(class_label), "PYTHON3")
-                arcpy.management.AddField(seed_features, "AFE_CLASS", "TEXT", field_length=255)
-                arcpy.management.CalculateField(seed_features, "AFE_CLASS", repr(class_label), "PYTHON3")
-                class_outputs.append(class_output)
-                seed_outputs.append(seed_features)
-                seed_features = None
-            finally:
-                for dataset in (class_samples, query_features, seed_features):
-                    if dataset and arcpy.Exists(dataset):
-                        arcpy.management.Delete(dataset)
-        arcpy.management.Merge(class_outputs, output_features)
-        arcpy.management.Merge(seed_outputs, seed_output_features)
-    finally:
-        if arcpy.Exists(sample_layer):
-            arcpy.management.Delete(sample_layer)
-        for dataset in class_outputs + seed_outputs:
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
+    _find_classified_similar_features_impl(
+        embedding_features, target_features, sample_points, class_field, feature_type,
+        output_features, seed_output_features, threshold, scratch_workspace, messages,
+        _class_value_label, _select_feature_embedding_queries, _sql_literal,
+    )
 
 
 def _classify_target_features(
     target_features, similar_features, seed_features, output_features, scratch_workspace, messages,
 ):
-    target_id_field = "AFE_TARGET_ID"
-    target_area_field = "AFE_AREA_SQM"
-    evidence_area_field = "AFE_EVID_SQM"
-    arcpy.management.CopyFeatures(target_features, output_features)
-    existing_fields = {field.name.upper() for field in arcpy.ListFields(output_features)}
-    if target_id_field not in existing_fields:
-        arcpy.management.AddField(output_features, target_id_field, "LONG")
-    if "AUTO_CLASS" not in existing_fields:
-        arcpy.management.AddField(output_features, "AUTO_CLASS", "TEXT", field_length=255)
-    if "CLASS_COV_PCT" not in existing_fields:
-        arcpy.management.AddField(output_features, "CLASS_COV_PCT", "DOUBLE")
-    if "CLASS_REASON" not in existing_fields:
-        arcpy.management.AddField(output_features, "CLASS_REASON", "TEXT", field_length=255)
-    if "EVIDENCE_METRIC" not in existing_fields:
-        arcpy.management.AddField(output_features, "EVIDENCE_METRIC", "TEXT", field_length=32)
-    if target_area_field not in existing_fields:
-        arcpy.management.AddField(output_features, target_area_field, "DOUBLE")
-    oid_field = arcpy.Describe(output_features).OIDFieldName
-    arcpy.management.CalculateField(output_features, target_id_field, f"!{oid_field}!", "PYTHON3")
-    arcpy.management.CalculateGeometryAttributes(
-        output_features, [[target_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
-    )
-    evidence_by_target = {}
-    for evidence_features in (similar_features, seed_features):
-        intersections = arcpy.CreateUniqueName("class_intersections", scratch_workspace)
-        try:
-            arcpy.analysis.PairwiseIntersect(
-                [output_features, evidence_features], intersections, "ALL", None, "INPUT"
-            )
-            if int(arcpy.management.GetCount(intersections)[0]):
-                arcpy.management.AddField(intersections, evidence_area_field, "DOUBLE")
-                arcpy.management.CalculateGeometryAttributes(
-                    intersections, [[evidence_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
-                )
-                with arcpy.da.SearchCursor(
-                    intersections, [target_id_field, "AFE_CLASS", evidence_area_field]
-                ) as cursor:
-                    for target_id, class_value, evidence_area in cursor:
-                        if target_id is None or not class_value:
-                            continue
-                        target_evidence = evidence_by_target.setdefault(target_id, {})
-                        target_evidence[class_value] = (
-                            target_evidence.get(class_value, 0.0) + (evidence_area or 0.0)
-                        )
-        finally:
-            if arcpy.Exists(intersections):
-                arcpy.management.Delete(intersections)
-
-    classified_count = 0
-    with arcpy.da.UpdateCursor(
-        output_features,
-        [target_id_field, target_area_field, "AUTO_CLASS", "CLASS_COV_PCT", "CLASS_REASON", "EVIDENCE_METRIC"],
-    ) as cursor:
-        for target_id, target_area, class_value, coverage_percent, class_reason, evidence_metric in cursor:
-            class_evidence = evidence_by_target.get(target_id, {})
-            if class_evidence:
-                ranked_classes = sorted(
-                    class_evidence.items(), key=lambda item: (-item[1], str(item[0]).casefold())
-                )
-                class_value, evidence_area = ranked_classes[0]
-                coverage_percent = min(
-                    100.0, (evidence_area / target_area) * 100.0
-                ) if target_area else 0.0
-                tied_classes = [
-                    str(value) for value, area in ranked_classes
-                    if math.isclose(area, evidence_area, rel_tol=1e-9, abs_tol=1e-6)
-                ]
-                if len(tied_classes) > 1:
-                    class_value = "Ambiguous"
-                    class_reason = "Equal evidence for: " + ", ".join(tied_classes)
-                else:
-                    class_reason = "Strongest overlapping class evidence"
-                    classified_count += 1
-            else:
-                class_value = "Unclassified"
-                coverage_percent = 0.0
-                class_reason = "No overlapping class evidence"
-            evidence_metric = "AreaCoveragePercent"
-            cursor.updateRow([
-                target_id, target_area, class_value, coverage_percent,
-                class_reason, evidence_metric,
-            ])
-    arcpy.management.DeleteField(output_features, [target_id_field, target_area_field])
-    messages.addMessage(
-        f"Classified {classified_count} of {int(arcpy.management.GetCount(output_features)[0])} target feature(s)."
+    _classify_target_features_impl(
+        target_features, similar_features, seed_features, output_features, scratch_workspace, messages,
     )
 
 
@@ -2787,12 +2663,13 @@ def _generate_embeddings(
     chunk_workspace = None
     chunk_raster_folder = None
     if use_chunks:
-        chunk_workspace = _embedding_checkpoint_workspace(
+        chunk_workspace = _embedding_checkpoint_workspace_impl(
             image_service_cache["cache_root"],
             model,
             grid_size,
             batch_size,
             output_spatial_reference,
+            EMBEDDING_CHUNK_PIXELS,
         )
         if not arcpy.Exists(chunk_workspace):
             arcpy.management.CreateFileGDB(
@@ -2892,9 +2769,10 @@ def _generate_embeddings(
                 f"Assembling {len(chunk_outputs):,} completed embedding chunks "
                 "with one direct merge..."
             )
-            _merge_embedding_chunks(
+            _merge_embedding_chunks_impl(
                 chunk_outputs,
                 output_embeddings,
+                _valid_embedding_output,
             )
     except Exception:
         if arcpy.Exists(output_embeddings):
@@ -2902,127 +2780,10 @@ def _generate_embeddings(
         raise
 
 
-def _generate_embeddings_with_model(**kwargs):
-    generate_embeddings = getattr(
-        getattr(arcpy, "geoai", None), "GenerateEmbeddingsUsingAIModels", None
-    )
-    if not generate_embeddings:
-        raise arcpy.ExecuteError(
-            "Generate Embeddings Using AI Models is unavailable in this ArcGIS Pro "
-            "installation. Install or update the GeoAI deep-learning tools required "
-            "by the ArcGIS Pro GeoAI toolbox."
-        )
-    return generate_embeddings(**kwargs)
-
-
-def _merge_embedding_chunks(
-    chunk_outputs,
-    output_embeddings,
-):
-    arcpy.management.Merge(
-        inputs=";".join(chunk_outputs),
-        output=output_embeddings,
-        field_mappings=None,
-        add_source="NO_SOURCE_INFO",
-        field_match_mode="AUTOMATIC",
-    )
-    if not _valid_embedding_output(output_embeddings):
-        raise arcpy.ExecuteError(
-            "The direct embedding merge did not create a valid feature class."
-        )
-
-
-def _embedding_checkpoint_workspace(
-    cache_root,
-    model,
-    grid_size,
-    batch_size,
-    output_spatial_reference,
-):
-    model_size = os.path.getsize(model) if os.path.isfile(model) else None
-    wkid = (
-        getattr(output_spatial_reference, "factoryCode", 0)
-        or getattr(output_spatial_reference, "latestWkid", 0)
-        or output_spatial_reference.name
-    )
-    checkpoint_properties = {
-        "model": os.path.abspath(model).lower(),
-        "model_size": model_size,
-        "grid_size": int(grid_size),
-        "output_wkid": wkid,
-        "chunk_pixels": EMBEDDING_CHUNK_PIXELS,
-        "input_strategy": "per_chunk_raster_v1",
-    }
-    checkpoint_workspace = _hashed_embedding_workspace(
-        cache_root, checkpoint_properties
-    )
-    if arcpy.Exists(checkpoint_workspace):
-        return checkpoint_workspace
-
-    legacy_batch_sizes = [int(batch_size)] + [
-        value for value in range(1, 129) if value != int(batch_size)
-    ]
-    for legacy_batch_size in legacy_batch_sizes:
-        legacy_properties = dict(checkpoint_properties)
-        legacy_properties["batch_size"] = legacy_batch_size
-        legacy_workspace = _hashed_embedding_workspace(
-            cache_root, legacy_properties
-        )
-        if arcpy.Exists(legacy_workspace):
-            return legacy_workspace
-    return checkpoint_workspace
-
-
-def _hashed_embedding_workspace(cache_root, checkpoint_properties):
-    checkpoint_key = json.dumps(checkpoint_properties, sort_keys=True)
-    checkpoint_id = hashlib.sha256(
-        checkpoint_key.encode("utf-8")
-    ).hexdigest()[:12]
-    return os.path.join(cache_root, f"embeddings_{checkpoint_id}.gdb")
-
-
-def _release_gpu_memory():
-    gc.collect()
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-    except Exception:
-        pass
-    try:
-        arcpy.management.ClearWorkspaceCache()
-    except Exception:
-        pass
-
-
 def _valid_embedding_checkpoint(feature_class):
     if not os.path.isfile(_checkpoint_marker(feature_class)):
         return False
     return _has_embedding_field(feature_class)
-
-
-def _has_embedding_field(feature_class):
-    if not arcpy.Exists(feature_class):
-        return False
-    try:
-        return any(
-            field.type.upper() == "BLOB"
-            for field in arcpy.ListFields(feature_class)
-        )
-    except Exception:
-        return False
-
-
-def _valid_embedding_output(feature_class):
-    if not _has_embedding_field(feature_class):
-        return False
-    try:
-        return int(arcpy.management.GetCount(feature_class)[0]) > 0
-    except Exception:
-        return False
 
 
 def _embedding_chunk_extents(
@@ -4423,390 +4184,6 @@ def _prepare_extraction_raster(source_imagery, messages):
     )
 
 
-def _clean_road_surfaces(
-    input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
-):
-    repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
-    road_inputs = arcpy.CreateUniqueName("road_qa_inputs", scratch_workspace)
-    hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
-    smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
-    smoothing_tolerance = _meters_to_spatial_units(
-        profile["road_smoothing_m"], spatial_reference
-    )
-    hole_fill_area = _square_meters_to_spatial_units(
-        profile["road_hole_fill_sqm"], spatial_reference
-    )
-    try:
-        messages.addMessage(
-            "Running road-surface QA: repairing masks, bridging small occlusion gaps, "
-            "filling small enclosed holes, and smoothing pixel stair-steps..."
-        )
-        arcpy.management.CopyFeatures(input_features, repaired_features)
-        arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(repaired_features)[0]):
-            raise arcpy.ExecuteError("Road QA repair produced no valid polygon masks.")
-        rejected_mask_count = _remove_implausible_road_masks(
-            repaired_features, road_inputs, profile, scratch_workspace
-        )
-        if rejected_mask_count:
-            messages.addMessage(
-                f"Rejected {rejected_mask_count:,} small or implausibly compact road mask(s)."
-            )
-        arcpy.management.EliminatePolygonPart(
-            in_features=road_inputs,
-            out_feature_class=hole_filled_features,
-            condition="AREA",
-            part_area=hole_fill_area,
-            part_area_percent="0",
-            part_option="CONTAINED_ONLY",
-        )
-        arcpy.cartography.SmoothPolygon(
-            in_features=hole_filled_features,
-            out_feature_class=smoothed_features,
-            algorithm="PAEK",
-            tolerance=smoothing_tolerance,
-            endpoint_option="FIXED_ENDPOINT",
-            error_option="RESOLVE_ERRORS",
-        )
-        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(smoothed_features)[0]):
-            raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
-        arcpy.management.CopyFeatures(smoothed_features, output_features)
-        messages.addMessage(
-            "Road-surface QA retained separate SAM3 masks, removed small and implausibly "
-            "compact masks, filled 25 sq m enclosed holes, and applied 0.75 m smoothing."
-        )
-    except Exception as error:
-        messages.addWarningMessage(
-            f"Road-surface QA could not complete ({error}); retaining original road detections."
-        )
-        arcpy.management.CopyFeatures(input_features, output_features)
-    finally:
-        for dataset in (
-            repaired_features, road_inputs, hole_filled_features, smoothed_features,
-        ):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-
-def _remove_implausible_road_masks(input_features, output_features, profile, scratch_workspace):
-    keep_field = "AFE_ROAD_QA_KEEP"
-    selection_layer = arcpy.CreateUniqueName("road_mask_selection", scratch_workspace)
-    minimum_area = profile["minimum_area_sqm"]
-    rejected_count = 0
-    try:
-        arcpy.management.AddField(input_features, keep_field, "SHORT")
-        with arcpy.da.UpdateCursor(input_features, ["SHAPE@", keep_field]) as cursor:
-            for geometry, _ in cursor:
-                area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
-                perimeter = geometry.getLength("GEODESIC", "METERS") if geometry else 0.0
-                compactness = 4.0 * math.pi * area / perimeter ** 2 if perimeter else 0.0
-                keep_mask = area >= minimum_area and not (area >= 1000.0 and compactness >= 0.70)
-                cursor.updateRow([geometry, int(keep_mask)])
-                rejected_count += int(not keep_mask)
-        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
-        arcpy.management.MakeFeatureLayer(input_features, selection_layer, f"{field_delimiter} = 1")
-        arcpy.management.CopyFeatures(selection_layer, output_features)
-        arcpy.management.DeleteField(output_features, keep_field)
-    finally:
-        if arcpy.Exists(selection_layer):
-            arcpy.management.Delete(selection_layer)
-    return rejected_count
-
-
-def _clean_agricultural_fields(
-    input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
-):
-    repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
-    cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
-    smoothed_features = arcpy.CreateUniqueName("field_smoothed", scratch_workspace)
-    hole_fill_area = _square_meters_to_spatial_units(
-        profile["field_hole_fill_sqm"], spatial_reference
-    )
-    fragment_area = _square_meters_to_spatial_units(
-        profile["field_fragment_max_sqm"], spatial_reference
-    )
-    smoothing_tolerance = _meters_to_spatial_units(
-        profile["field_smoothing_m"], spatial_reference
-    )
-    try:
-        messages.addMessage(
-            "Running agricultural-field QA: repairing masks, removing small fragments, "
-            "filling enclosed gaps, and smoothing one-pixel stair-steps..."
-        )
-        arcpy.management.CopyFeatures(input_features, repaired_features)
-        arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
-        arcpy.management.EliminatePolygonPart(
-            in_features=repaired_features,
-            out_feature_class=cleaned_features,
-            condition="AREA",
-            part_area=hole_fill_area,
-            part_area_percent="0",
-            part_option="CONTAINED_ONLY",
-        )
-        arcpy.management.EliminatePolygonPart(
-            in_features=cleaned_features,
-            out_feature_class=smoothed_features,
-            condition="AREA",
-            part_area=fragment_area,
-            part_area_percent="0",
-            part_option="ANY",
-        )
-        arcpy.cartography.SmoothPolygon(
-            in_features=smoothed_features,
-            out_feature_class=output_features,
-            algorithm="PAEK",
-            tolerance=smoothing_tolerance,
-            endpoint_option="FIXED_ENDPOINT",
-            error_option="RESOLVE_ERRORS",
-        )
-        arcpy.management.RepairGeometry(output_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(output_features)[0]):
-            raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
-        messages.addMessage(
-            "Agricultural-field QA completed with 100 sq m hole/fragment cleanup and "
-            "0.5 m boundary smoothing; separate fields remain separate."
-        )
-    except Exception as error:
-        messages.addWarningMessage(
-            f"Agricultural-field QA could not complete ({error}); retaining original field detections."
-        )
-        arcpy.management.CopyFeatures(input_features, output_features)
-    finally:
-        for dataset in (repaired_features, cleaned_features, smoothed_features):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-
-def _create_directional_road_connectors(
-    road_features, output_connectors, profile, spatial_reference, scratch_workspace,
-):
-    """Build narrow candidate corridors only between strongly aligned road-mask ends."""
-    bounding_rectangles = arcpy.CreateUniqueName("road_direction_rectangles", scratch_workspace)
-    maximum_gap = _meters_to_spatial_units(profile["road_direction_gap_m"], spatial_reference)
-    minimum_axis_alignment = math.cos(math.radians(profile["road_direction_alignment_deg"]))
-    segment_endpoints = []
-    try:
-        arcpy.management.MinimumBoundingGeometry(
-            in_features=road_features,
-            out_feature_class=bounding_rectangles,
-            geometry_type="RECTANGLE_BY_AREA",
-            group_option="NONE",
-            mbg_fields_option="NO_MBG_FIELDS",
-        )
-        with arcpy.da.SearchCursor(bounding_rectangles, ["SHAPE@"]) as cursor:
-            for source_id, (rectangle,) in enumerate(cursor):
-                endpoints = _rectangle_road_endpoints(rectangle)
-                if endpoints:
-                    first_endpoint, second_endpoint, width = endpoints
-                    segment_endpoints.append((source_id, first_endpoint, second_endpoint, width))
-
-        candidates = []
-        for first_index, (first_id, first_start, first_end, first_width) in enumerate(segment_endpoints):
-            first_axis = _unit_vector(first_start, first_end)
-            if first_axis is None:
-                continue
-            for second_id, second_start, second_end, second_width in segment_endpoints[first_index + 1:]:
-                if first_id == second_id:
-                    continue
-                second_axis = _unit_vector(second_start, second_end)
-                if second_axis is None or abs(_dot_product(first_axis, second_axis)) < minimum_axis_alignment:
-                    continue
-                for first_end_index, first_point in enumerate((first_start, first_end)):
-                    for second_end_index, second_point in enumerate((second_start, second_end)):
-                        gap_vector = _unit_vector(first_point, second_point)
-                        if gap_vector is None:
-                            continue
-                        gap_distance = math.hypot(
-                            second_point.X - first_point.X, second_point.Y - first_point.Y
-                        )
-                        if gap_distance > maximum_gap:
-                            continue
-                        if (
-                            abs(_dot_product(first_axis, gap_vector)) < minimum_axis_alignment
-                            or abs(_dot_product(second_axis, gap_vector)) < minimum_axis_alignment
-                        ):
-                            continue
-                        candidates.append((
-                            gap_distance,
-                            first_id,
-                            first_end_index,
-                            second_id,
-                            second_end_index,
-                            first_point,
-                            second_point,
-                            min(first_width, second_width),
-                        ))
-
-        arcpy.management.CreateFeatureclass(
-            scratch_workspace,
-            os.path.basename(output_connectors),
-            "POLYGON",
-            spatial_reference=spatial_reference,
-        )
-        used_endpoints = set()
-        connector_count = 0
-        with arcpy.da.InsertCursor(output_connectors, ["SHAPE@"]) as cursor:
-            for (_, first_id, first_end_index, second_id, second_end_index,
-                 first_point, second_point, width) in sorted(candidates):
-                first_key = (first_id, first_end_index)
-                second_key = (second_id, second_end_index)
-                if first_key in used_endpoints or second_key in used_endpoints or width <= 0:
-                    continue
-                connection = arcpy.Polyline(
-                    arcpy.Array([first_point, second_point]), spatial_reference
-                ).buffer(width / 2.0)
-                if connection and connection.getArea("GEODESIC", "SQUAREMETERS") > 0:
-                    cursor.insertRow([connection])
-                    used_endpoints.update((first_key, second_key))
-                    connector_count += 1
-        return connector_count
-    finally:
-        if arcpy.Exists(bounding_rectangles):
-            arcpy.management.Delete(bounding_rectangles)
-
-
-def _rectangle_road_endpoints(rectangle):
-    if not rectangle or rectangle.partCount != 1:
-        return None
-    points = [point for point in rectangle.getPart(0) if point]
-    if (
-        len(points) > 1
-        and points[0].X == points[-1].X
-        and points[0].Y == points[-1].Y
-    ):
-        points.pop()
-    if len(points) != 4:
-        return None
-    edges = []
-    for index, point in enumerate(points):
-        next_point = points[(index + 1) % len(points)]
-        edges.append((math.hypot(next_point.X - point.X, next_point.Y - point.Y), point, next_point))
-    short_edges = sorted(edges, key=lambda edge: edge[0])[:2]
-    if not short_edges[0][0] or not short_edges[1][0]:
-        return None
-    endpoints = []
-    for _, first_point, second_point in short_edges:
-        endpoints.append(arcpy.Point(
-            (first_point.X + second_point.X) / 2.0,
-            (first_point.Y + second_point.Y) / 2.0,
-        ))
-    return endpoints[0], endpoints[1], (short_edges[0][0] + short_edges[1][0]) / 2.0
-
-
-def _unit_vector(first_point, second_point):
-    delta_x = second_point.X - first_point.X
-    delta_y = second_point.Y - first_point.Y
-    length = math.hypot(delta_x, delta_y)
-    if not length:
-        return None
-    return delta_x / length, delta_y / length
-
-
-def _dot_product(first_vector, second_vector):
-    return first_vector[0] * second_vector[0] + first_vector[1] * second_vector[1]
-
-def _regularize_building_footprints(
-    input_features,
-    output_features,
-    spatial_reference,
-    scratch_workspace,
-    messages,
-):
-    area_field = "REG_AREA"
-    source_id_field = "AFE_SOURCE_ID"
-    tolerance_bands = (
-        (0, 50, 0.5),
-        (50, 200, 1.0),
-        (200, 500, 1.5),
-        (500, 1000, 2.5),
-        (1000, 4500, 3.5),
-        (4500, None, 5.0),
-    )
-    building_layer = arcpy.CreateUniqueName("building_regularization")
-    fallback_layer = arcpy.CreateUniqueName("building_regularization_fallback")
-    regularized_outputs = []
-
-    try:
-        arcpy.management.AddField(input_features, area_field, "DOUBLE")
-        arcpy.management.AddField(input_features, source_id_field, "LONG")
-        input_oid_field = arcpy.Describe(input_features).OIDFieldName
-        arcpy.management.CalculateField(
-            input_features, source_id_field, f"!{input_oid_field}!", "PYTHON3"
-        )
-        arcpy.management.CalculateGeometryAttributes(
-            input_features,
-            [[area_field, "AREA_GEODESIC"]],
-            area_unit="SQUARE_METERS",
-        )
-        arcpy.management.MakeFeatureLayer(input_features, building_layer)
-
-        for minimum_area, maximum_area, tolerance_meters in tolerance_bands:
-            where_clause = f"{area_field} > {minimum_area}"
-            if maximum_area is not None:
-                where_clause += f" AND {area_field} <= {maximum_area}"
-            arcpy.management.SelectLayerByAttribute(
-                building_layer, "NEW_SELECTION", where_clause
-            )
-            selected_count = int(arcpy.management.GetCount(building_layer)[0])
-            if selected_count == 0:
-                continue
-
-            messages.addMessage(
-                f"Regularizing {selected_count} building footprint(s) with a "
-                f"{tolerance_meters:g} meter tolerance..."
-            )
-            regularized_output = arcpy.CreateUniqueName(
-                "regularized_buildings", scratch_workspace
-            )
-            regularized_outputs.append(regularized_output)
-            arcpy.ddd.RegularizeBuildingFootprint(
-                in_features=building_layer,
-                out_feature_class=regularized_output,
-                method="RIGHT_ANGLES",
-                tolerance=_meters_to_spatial_units(
-                    tolerance_meters, spatial_reference
-                ),
-            )
-
-        if not regularized_outputs:
-            messages.addWarningMessage(
-                "Building regularization produced no output; retaining the original "
-                "SAM3 detections."
-            )
-            arcpy.management.CopyFeatures(input_features, output_features)
-            return
-        arcpy.management.Merge(regularized_outputs, output_features)
-        regularized_ids = {
-            source_id
-            for (source_id,) in arcpy.da.SearchCursor(output_features, [source_id_field])
-            if source_id is not None
-        }
-        input_count = int(arcpy.management.GetCount(input_features)[0])
-        if len(regularized_ids) < input_count:
-            arcpy.management.MakeFeatureLayer(input_features, fallback_layer)
-            arcpy.management.SelectLayerByAttribute(
-                fallback_layer,
-                "NEW_SELECTION",
-                f"{source_id_field} NOT IN ({', '.join(map(str, regularized_ids)) or '-1'})",
-            )
-            fallback_count = int(arcpy.management.GetCount(fallback_layer)[0])
-            if fallback_count:
-                messages.addWarningMessage(
-                    f"Retaining {fallback_count} original building footprint(s) that "
-                    "could not be regularized."
-                )
-                arcpy.management.Append(fallback_layer, output_features, "NO_TEST")
-        arcpy.management.DeleteField(output_features, [area_field, source_id_field])
-    finally:
-        for dataset in (building_layer, fallback_layer):
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-        for dataset in regularized_outputs:
-            if arcpy.Exists(dataset):
-                arcpy.management.Delete(dataset)
-
-
 def _select_damage_queries(
     target_features,
     sample_points,
@@ -4942,15 +4319,23 @@ def _select_road_feature_embedding_queries(
     class_label = f"Class '{class_value}'" if class_value is not None else "Road examples"
     try:
         arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
-        arcpy.management.SelectLayerByLocation(
-            sample_layer, "WITHIN_A_DISTANCE", target_features, "10 Meters", "NEW_SELECTION"
-        )
         sample_count = int(arcpy.management.GetCount(sample_layer)[0])
         if sample_count < 6:
             raise arcpy.ExecuteError(
-                f"{class_label} needs at least 6 points on or within 10 meters of inferred roads; "
-                f"{sample_count} valid point(s) remain."
+                f"{class_label} needs at least 6 example points; "
+                f"{sample_count} point(s) were provided."
             )
+        arcpy.management.SelectLayerByLocation(
+            sample_layer, "WITHIN_A_DISTANCE", target_features, "10 Meters", "NEW_SELECTION"
+        )
+        nearby_count = int(arcpy.management.GetCount(sample_layer)[0])
+        if nearby_count < sample_count:
+            messages.addWarningMessage(
+                f"{class_label}: {sample_count - nearby_count} example point(s) are more than "
+                "10 meters from an inferred road. They remain in the embedding query because "
+                "SAM3 road masks are candidate evidence, not ground truth."
+            )
+        arcpy.management.SelectLayerByAttribute(sample_layer, "CLEAR_SELECTION")
         arcpy.analysis.PairwiseBuffer(sample_layer, sample_regions, "10 Meters", dissolve_option="NONE")
         arcpy.management.MakeFeatureLayer(target_features, target_layer)
         arcpy.management.SelectLayerByLocation(target_layer, "INTERSECT", sample_regions, None, "NEW_SELECTION")
@@ -4964,7 +4349,7 @@ def _select_road_feature_embedding_queries(
             )
         arcpy.management.CopyFeatures(embedding_layer, query_features)
         messages.addMessage(
-            f"{class_label}: using {sample_count} valid point-centered road region(s) and "
+            f"{class_label}: using {sample_count} point-centered road region(s) and "
             f"{cell_count} embedding cell(s) as similarity examples."
         )
         return query_features, seed_features
