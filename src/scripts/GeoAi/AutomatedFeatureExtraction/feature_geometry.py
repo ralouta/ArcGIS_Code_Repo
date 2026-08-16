@@ -10,15 +10,23 @@ def clean_road_surfaces(
     screened_features = arcpy.CreateUniqueName("road_screened", scratch_workspace)
     contracted_features = arcpy.CreateUniqueName("road_contracted", scratch_workspace)
     dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
-    expanded_features = arcpy.CreateUniqueName("road_expanded", scratch_workspace)
     hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
-    smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
-    final_features = arcpy.CreateUniqueName("road_final", scratch_workspace)
+    polygon_boundary_features = arcpy.CreateUniqueName("road_boundaries", scratch_workspace)
+    polygon_boundary_lines = arcpy.CreateUniqueName("road_boundary_lines", scratch_workspace)
+    centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
+    smoothed_centerline_features = arcpy.CreateUniqueName(
+        "road_smoothed_centerlines", scratch_workspace
+    )
+    buffered_features = arcpy.CreateUniqueName("road_reconstructed", scratch_workspace)
+    dissolved_output_features = arcpy.CreateUniqueName("road_final", scratch_workspace)
     contraction_distance = meters_to_spatial_units(
         profile["road_contraction_m"], spatial_reference
     )
-    smoothing_tolerance = meters_to_spatial_units(
-        profile["road_smoothing_m"], spatial_reference
+    centerline_extension = meters_to_spatial_units(
+        profile["road_centerline_extension_m"], spatial_reference
+    )
+    centerline_smoothing = meters_to_spatial_units(
+        profile["road_centerline_smoothing_m"], spatial_reference
     )
     hole_fill_area = square_meters_to_spatial_units(
         profile["road_hole_fill_sqm"], spatial_reference
@@ -26,7 +34,7 @@ def clean_road_surfaces(
     try:
         messages.addMessage(
             "Running road-surface QA: repairing masks, removing small fragments, "
-            "and applying conservative shrink-clean-expand cleanup..."
+            "and reconstructing polygons from smoothed centerlines..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
@@ -47,39 +55,64 @@ def clean_road_surfaces(
         if not int(arcpy.management.GetCount(contracted_features)[0]):
             raise arcpy.ExecuteError("Road QA contraction removed all polygon masks.")
         arcpy.analysis.PairwiseDissolve(contracted_features, dissolved_features)
-        arcpy.management.MultipartToSinglepart(dissolved_features, expanded_features)
-        arcpy.analysis.PairwiseBuffer(expanded_features, hole_filled_features, contraction_distance)
+        arcpy.analysis.PairwiseBuffer(dissolved_features, hole_filled_features, contraction_distance)
         arcpy.management.EliminatePolygonPart(
             in_features=hole_filled_features,
-            out_feature_class=smoothed_features,
+            out_feature_class=polygon_boundary_features,
             condition="AREA",
             part_area=hole_fill_area,
             part_area_percent="0",
             part_option="CONTAINED_ONLY",
         )
-        arcpy.cartography.SmoothPolygon(
-            in_features=smoothed_features,
-            out_feature_class=final_features,
+        arcpy.topographic.PolygonToCenterline(
+            polygon_boundary_features, centerline_features
+        )
+        if not int(arcpy.management.GetCount(centerline_features)[0]):
+            raise arcpy.ExecuteError("Road QA could not derive usable centerlines.")
+        arcpy.management.PolygonToLine(polygon_boundary_features, polygon_boundary_lines)
+        arcpy.analysis.Near(
+            centerline_features,
+            polygon_boundary_lines,
+            search_radius="25 Meters",
+            location="NO_LOCATION",
+            angle="NO_ANGLE",
+            method="PLANAR",
+            distance_unit="Meters",
+        )
+        calculate_road_buffer_widths(centerline_features, profile, spatial_reference)
+        arcpy.edit.ExtendLine(centerline_features, centerline_extension, "EXTENSION")
+        arcpy.cartography.SmoothLine(
+            centerline_features,
+            smoothed_centerline_features,
             algorithm="PAEK",
-            tolerance=smoothing_tolerance,
-            endpoint_option="FIXED_ENDPOINT",
+            tolerance=centerline_smoothing,
+            endpoint_option="FIXED_CLOSED_ENDPOINT",
             error_option="RESOLVE_ERRORS",
         )
-        arcpy.management.RepairGeometry(final_features, "DELETE_NULL", "ESRI")
+        arcpy.analysis.PairwiseBuffer(
+            smoothed_centerline_features,
+            buffered_features,
+            "AFE_HALF_WIDTH",
+            dissolve_option="NONE",
+        )
+        arcpy.analysis.PairwiseDissolve(buffered_features, dissolved_output_features)
+        arcpy.management.RepairGeometry(dissolved_output_features, "DELETE_NULL", "ESRI")
         filter_by_minimum_geodesic_area(
-            final_features, output_features, profile["minimum_area_sqm"], scratch_workspace
+            dissolved_output_features,
+            output_features,
+            profile["minimum_area_sqm"],
+            scratch_workspace,
         )
         if not int(arcpy.management.GetCount(output_features)[0]):
             raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
         messages.addMessage(
-            "Road-surface QA applied a {0:g} m shrink-clean-expand pass, removed "
-            "fragments below {1:g} sq m, filled {2:g} sq m enclosed holes, and "
-            "applied {3:g} m smoothing."
+            "Road-surface QA reconstructed polygons from centerlines with a {0:g} m "
+            "extension, {1:g} m smoothing, and half-widths constrained to {2:g}-{3:g} m."
             .format(
-                profile["road_contraction_m"],
-                profile["minimum_area_sqm"],
-                profile["road_hole_fill_sqm"],
-                profile["road_smoothing_m"],
+                profile["road_centerline_extension_m"],
+                profile["road_centerline_smoothing_m"],
+                profile["road_minimum_half_width_m"],
+                profile["road_maximum_half_width_m"],
             )
         )
     except Exception as error:
@@ -90,10 +123,27 @@ def clean_road_surfaces(
     finally:
         for dataset in (
             repaired_features, screened_features, contracted_features, dissolved_features,
-            expanded_features, hole_filled_features, smoothed_features, final_features,
+            hole_filled_features, polygon_boundary_features, polygon_boundary_lines,
+            centerline_features,
+            smoothed_centerline_features, buffered_features, dissolved_output_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
+
+
+def calculate_road_buffer_widths(centerline_features, profile, spatial_reference):
+    width_field = "AFE_HALF_WIDTH"
+    minimum_width = meters_to_spatial_units(
+        profile["road_minimum_half_width_m"], spatial_reference
+    )
+    maximum_width = meters_to_spatial_units(
+        profile["road_maximum_half_width_m"], spatial_reference
+    )
+    arcpy.management.AddField(centerline_features, width_field, "DOUBLE")
+    with arcpy.da.UpdateCursor(centerline_features, ["NEAR_DIST", width_field]) as cursor:
+        for near_distance, _ in cursor:
+            measured_width = meters_to_spatial_units(float(near_distance or 0), spatial_reference)
+            cursor.updateRow([near_distance, max(minimum_width, min(measured_width, maximum_width))])
 
 
 def filter_by_minimum_geodesic_area(

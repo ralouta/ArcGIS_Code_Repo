@@ -130,8 +130,11 @@ FEATURE_PROFILES = {
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
         "road_contraction_m": 0.25,
-        "road_smoothing_m": 0.25,
         "road_hole_fill_sqm": 2.0,
+        "road_centerline_extension_m": 10.0,
+        "road_centerline_smoothing_m": 2.0,
+        "road_minimum_half_width_m": 2.5,
+        "road_maximum_half_width_m": 12.0,
     },
     "Water Bodies": {
         "prompt": "water body",
