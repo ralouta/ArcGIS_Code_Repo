@@ -43,6 +43,20 @@ Please ensure you have the prerequisites installed before proceeding.
 
 Remember to save your project to keep the toolbox in your project for future use.
 
+## Featured GeoAI Toolbox
+
+### Automated Feature Extraction and Classification
+
+[`AutomatedFeatureExtraction.pyt`](src/scripts/GeoAi/AutomatedFeatureExtraction/AutomatedFeatureExtraction.pyt) is an ArcGIS Pro toolbox for extracting and classifying imagery-based feature candidates with SAM3 and embedding similarity models.
+
+- **Feature Extraction** creates candidate polygons from active-map imagery or World Imagery Wayback.
+- **Embedding Similarity** finds imagery cells resembling at least six representative example points.
+- **Feature Classification** assigns class evidence to extracted or supplied target polygons.
+
+Road candidates use conservative geometry QA/QC: invalid and implausible masks are removed, only tiny enclosed holes are filled, and boundaries are lightly smoothed. The toolbox does not automatically bridge disconnected road masks, so false road connections remain visible for review.
+
+See the [Automated Feature Extraction README](src/scripts/GeoAi/AutomatedFeatureExtraction/README.md) for workflows, requirements, outputs, and candidate-review guidance.
+
 ## Scripts and Toolboxes
 
 The scripts and toolboxes in the `src/scripts/` directory are designed to work with ArcGIS Pro and the ArcGIS Deep Learning Framework. They provide functionality for managing and analyzing geospatial data, including creating and manipulating geodatabases, managing ArcGIS Online resources, and performing deep learning on geospatial data. Each script or toolbox is documented with comments explaining its purpose and usage.
