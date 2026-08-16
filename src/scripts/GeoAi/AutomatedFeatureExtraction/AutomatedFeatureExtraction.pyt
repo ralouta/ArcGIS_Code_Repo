@@ -129,11 +129,9 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 25.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
-        "road_aggregation_m": 0.0,
+        "road_contraction_m": 0.25,
         "road_smoothing_m": 0.25,
         "road_hole_fill_sqm": 2.0,
-        "road_direction_gap_m": 30.0,
-        "road_direction_alignment_deg": 25.0,
     },
     "Water Bodies": {
         "prompt": "water body",
@@ -310,8 +308,9 @@ FEATURE_PROFILES = {
         "minimum_area_sqm": 100.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
+        "field_contraction_m": 2.0,
+        "field_minimum_area_sqm": 200.0,
         "field_hole_fill_sqm": 100.0,
-        "field_fragment_max_sqm": 100.0,
         "field_smoothing_m": 0.5,
     },
     "Park-Like Green Space": {

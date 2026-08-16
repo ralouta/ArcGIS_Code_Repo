@@ -1,5 +1,3 @@
-import math
-
 import arcpy
 
 from validation_helpers import meters_to_spatial_units, square_meters_to_spatial_units
@@ -9,12 +7,15 @@ def clean_road_surfaces(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
     repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
-    road_inputs = arcpy.CreateUniqueName("road_qa_inputs", scratch_workspace)
-    aggregated_features = arcpy.CreateUniqueName("road_aggregated", scratch_workspace)
+    screened_features = arcpy.CreateUniqueName("road_screened", scratch_workspace)
+    contracted_features = arcpy.CreateUniqueName("road_contracted", scratch_workspace)
+    dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
+    expanded_features = arcpy.CreateUniqueName("road_expanded", scratch_workspace)
     hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
     smoothed_features = arcpy.CreateUniqueName("road_smoothed", scratch_workspace)
-    aggregation_distance = meters_to_spatial_units(
-        profile["road_aggregation_m"], spatial_reference
+    final_features = arcpy.CreateUniqueName("road_final", scratch_workspace)
+    contraction_distance = meters_to_spatial_units(
+        profile["road_contraction_m"], spatial_reference
     )
     smoothing_tolerance = meters_to_spatial_units(
         profile["road_smoothing_m"], spatial_reference
@@ -24,56 +25,59 @@ def clean_road_surfaces(
     )
     try:
         messages.addMessage(
-            "Running road-surface QA: repairing masks, preserving disconnected "
-            "surfaces, filling tiny enclosed holes, and smoothing pixel stair-steps..."
+            "Running road-surface QA: repairing masks, removing small fragments, "
+            "and applying conservative shrink-clean-expand cleanup..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
         if not int(arcpy.management.GetCount(repaired_features)[0]):
             raise arcpy.ExecuteError("Road QA repair produced no valid polygon masks.")
-        rejected_mask_count = remove_implausible_road_masks(
-            repaired_features, road_inputs, profile, scratch_workspace
+        rejected_mask_count = filter_by_minimum_geodesic_area(
+            repaired_features, screened_features, profile["minimum_area_sqm"], scratch_workspace
         )
         if rejected_mask_count:
             messages.addMessage(
-                f"Rejected {rejected_mask_count:,} small or implausibly compact road mask(s)."
+                f"Rejected {rejected_mask_count:,} road fragment(s) below "
+                f"{profile['minimum_area_sqm']:g} sq m."
             )
-        if aggregation_distance > 0:
-            arcpy.cartography.AggregatePolygons(
-                in_features=road_inputs,
-                out_feature_class=aggregated_features,
-                aggregation_distance=aggregation_distance,
-                minimum_area=0,
-                minimum_hole_size=hole_fill_area,
-                orthogonality_option="NON_ORTHOGONAL",
-            )
-        else:
-            arcpy.management.CopyFeatures(road_inputs, aggregated_features)
+        arcpy.analysis.PairwiseBuffer(
+            screened_features, contracted_features, -contraction_distance
+        )
+        arcpy.management.RepairGeometry(contracted_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(contracted_features)[0]):
+            raise arcpy.ExecuteError("Road QA contraction removed all polygon masks.")
+        arcpy.analysis.PairwiseDissolve(contracted_features, dissolved_features)
+        arcpy.management.MultipartToSinglepart(dissolved_features, expanded_features)
+        arcpy.analysis.PairwiseBuffer(expanded_features, hole_filled_features, contraction_distance)
         arcpy.management.EliminatePolygonPart(
-            in_features=aggregated_features,
-            out_feature_class=hole_filled_features,
+            in_features=hole_filled_features,
+            out_feature_class=smoothed_features,
             condition="AREA",
             part_area=hole_fill_area,
             part_area_percent="0",
             part_option="CONTAINED_ONLY",
         )
         arcpy.cartography.SmoothPolygon(
-            in_features=hole_filled_features,
-            out_feature_class=smoothed_features,
+            in_features=smoothed_features,
+            out_feature_class=final_features,
             algorithm="PAEK",
             tolerance=smoothing_tolerance,
             endpoint_option="FIXED_ENDPOINT",
             error_option="RESOLVE_ERRORS",
         )
-        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(smoothed_features)[0]):
+        arcpy.management.RepairGeometry(final_features, "DELETE_NULL", "ESRI")
+        filter_by_minimum_geodesic_area(
+            final_features, output_features, profile["minimum_area_sqm"], scratch_workspace
+        )
+        if not int(arcpy.management.GetCount(output_features)[0]):
             raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
-        arcpy.management.CopyFeatures(smoothed_features, output_features)
         messages.addMessage(
-            "Road-surface QA preserved disconnected masks, removed small and "
-            "implausibly compact masks, filled {0:g} sq m enclosed holes, and "
-            "applied {1:g} m smoothing."
+            "Road-surface QA applied a {0:g} m shrink-clean-expand pass, removed "
+            "fragments below {1:g} sq m, filled {2:g} sq m enclosed holes, and "
+            "applied {3:g} m smoothing."
             .format(
+                profile["road_contraction_m"],
+                profile["minimum_area_sqm"],
                 profile["road_hole_fill_sqm"],
                 profile["road_smoothing_m"],
             )
@@ -85,26 +89,25 @@ def clean_road_surfaces(
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
         for dataset in (
-            repaired_features, road_inputs, aggregated_features, hole_filled_features,
-            smoothed_features,
+            repaired_features, screened_features, contracted_features, dissolved_features,
+            expanded_features, hole_filled_features, smoothed_features, final_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
 
-def remove_implausible_road_masks(input_features, output_features, profile, scratch_workspace):
-    keep_field = "AFE_ROAD_QA_KEEP"
-    selection_layer = arcpy.CreateUniqueName("road_mask_selection", scratch_workspace)
-    minimum_area = profile["minimum_area_sqm"]
+def filter_by_minimum_geodesic_area(
+    input_features, output_features, minimum_area_sqm, scratch_workspace,
+):
+    keep_field = "AFE_QA_KEEP"
+    selection_layer = arcpy.CreateUniqueName("qa_area_selection", scratch_workspace)
     rejected_count = 0
     try:
         arcpy.management.AddField(input_features, keep_field, "SHORT")
         with arcpy.da.UpdateCursor(input_features, ["SHAPE@", keep_field]) as cursor:
             for geometry, _ in cursor:
                 area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
-                perimeter = geometry.getLength("GEODESIC", "METERS") if geometry else 0.0
-                compactness = 4.0 * math.pi * area / perimeter ** 2 if perimeter else 0.0
-                keep_mask = area >= minimum_area and not (area >= 1000.0 and compactness >= 0.70)
+                keep_mask = area >= minimum_area_sqm
                 cursor.updateRow([geometry, int(keep_mask)])
                 rejected_count += int(not keep_mask)
         field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
@@ -121,13 +124,16 @@ def clean_agricultural_fields(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
     repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
+    screened_features = arcpy.CreateUniqueName("field_screened", scratch_workspace)
+    contracted_features = arcpy.CreateUniqueName("field_contracted", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
+    expanded_features = arcpy.CreateUniqueName("field_expanded", scratch_workspace)
     smoothed_features = arcpy.CreateUniqueName("field_smoothed", scratch_workspace)
+    contraction_distance = meters_to_spatial_units(
+        profile["field_contraction_m"], spatial_reference
+    )
     hole_fill_area = square_meters_to_spatial_units(
         profile["field_hole_fill_sqm"], spatial_reference
-    )
-    fragment_area = square_meters_to_spatial_units(
-        profile["field_fragment_max_sqm"], spatial_reference
     )
     smoothing_tolerance = meters_to_spatial_units(
         profile["field_smoothing_m"], spatial_reference
@@ -135,40 +141,65 @@ def clean_agricultural_fields(
     try:
         messages.addMessage(
             "Running agricultural-field QA: repairing masks, removing small fragments, "
-            "filling enclosed gaps, and smoothing one-pixel stair-steps..."
+            "and applying conservative shrink-clean-expand cleanup..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
+        rejected_count = filter_by_minimum_geodesic_area(
+            repaired_features,
+            screened_features,
+            profile["field_minimum_area_sqm"],
+            scratch_workspace,
+        )
+        if rejected_count:
+            messages.addMessage(
+                f"Rejected {rejected_count:,} agricultural fragment(s) below "
+                f"{profile['field_minimum_area_sqm']:g} sq m."
+            )
+        arcpy.analysis.PairwiseBuffer(
+            screened_features, contracted_features, -contraction_distance
+        )
+        arcpy.management.RepairGeometry(contracted_features, "DELETE_NULL", "ESRI")
+        if not int(arcpy.management.GetCount(contracted_features)[0]):
+            raise arcpy.ExecuteError("Agricultural-field QA contraction removed all polygons.")
         arcpy.management.EliminatePolygonPart(
-            in_features=repaired_features,
+            in_features=contracted_features,
             out_feature_class=cleaned_features,
             condition="AREA",
             part_area=hole_fill_area,
             part_area_percent="0",
             part_option="CONTAINED_ONLY",
         )
-        arcpy.management.EliminatePolygonPart(
-            in_features=cleaned_features,
-            out_feature_class=smoothed_features,
-            condition="AREA",
-            part_area=fragment_area,
-            part_area_percent="0",
-            part_option="ANY",
+        arcpy.analysis.PairwiseBuffer(
+            cleaned_features, expanded_features, contraction_distance
         )
         arcpy.cartography.SmoothPolygon(
-            in_features=smoothed_features,
-            out_feature_class=output_features,
+            in_features=expanded_features,
+            out_feature_class=smoothed_features,
             algorithm="PAEK",
             tolerance=smoothing_tolerance,
             endpoint_option="FIXED_ENDPOINT",
             error_option="RESOLVE_ERRORS",
         )
-        arcpy.management.RepairGeometry(output_features, "DELETE_NULL", "ESRI")
+        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
+        filter_by_minimum_geodesic_area(
+            smoothed_features,
+            output_features,
+            profile["field_minimum_area_sqm"],
+            scratch_workspace,
+        )
         if not int(arcpy.management.GetCount(output_features)[0]):
             raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
         messages.addMessage(
-            "Agricultural-field QA completed with 100 sq m hole/fragment cleanup and "
-            "0.5 m boundary smoothing; separate fields remain separate."
+            "Agricultural-field QA applied a {0:g} m shrink-clean-expand pass, removed "
+            "fragments below {1:g} sq m, filled {2:g} sq m enclosed holes, and applied "
+            "{3:g} m boundary smoothing; separate fields remain separate."
+            .format(
+                profile["field_contraction_m"],
+                profile["field_minimum_area_sqm"],
+                profile["field_hole_fill_sqm"],
+                profile["field_smoothing_m"],
+            )
         )
     except Exception as error:
         messages.addWarningMessage(
@@ -176,7 +207,10 @@ def clean_agricultural_fields(
         )
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
-        for dataset in (repaired_features, cleaned_features, smoothed_features):
+        for dataset in (
+            repaired_features, screened_features, contracted_features, cleaned_features,
+            expanded_features, smoothed_features,
+        ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 

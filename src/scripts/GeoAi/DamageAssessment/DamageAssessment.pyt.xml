@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en">
+  <Esri>
+    <CreaDate>20260811</CreaDate>
+    <CreaTime>10464600</CreaTime>
+    <ArcGISFormat>1.0</ArcGISFormat>
+    <SyncOnce>TRUE</SyncOnce>
+    <ModDate>20260812</ModDate>
+    <ModTime>103245</ModTime>
+    <ArcGISProfile>ItemDescription</ArcGISProfile>
+  </Esri>
+  <toolbox name="DamageAssessment" alias="automateddamageassessment">
+    <arcToolboxHelpPath>c:\program files\arcgis\pro\Resources\Help\gp</arcToolboxHelpPath>
+    <toolsets/>
+  </toolbox>
+  <dataIdInfo>
+    <idCitation>
+      <resTitle>Damage Assessment</resTitle>
+    </idCitation>
+    <idPurp>Automated Damage Assessment extracts target features, finds post-event imagery areas that resemble user-provided examples, and measures image-based damage evidence. It supports Feature Extraction, Embedding Similarity, and Damage Assessment workflows using ArcGIS GeoAI tools, SAM3, and supported embedding models.</idPurp>
+    <idAbs>Choose a Feature Type first. The available Workflow choices then update to match that feature type. Feature Extraction creates target polygons from imagery. Embedding Similarity identifies post-event imagery cells that resemble at least six example points. Damage Assessment compares target features to similar embedding cells and assigns image-evidence classes. Outputs are preliminary analytical results and should be reviewed against source imagery and field observations.</idAbs>
+    <searchKeys>
+      <keyword>damage assessment</keyword>
+      <keyword>ArcGIS GeoAI</keyword>
+      <keyword>SAM3</keyword>
+      <keyword>embedding similarity</keyword>
+      <keyword>deep learning</keyword>
+      <keyword>post-event imagery</keyword>
+    </searchKeys>
+  </dataIdInfo>
+  <Parameters>
+    <Parameter>
+      <Name>Feature Type</Name>
+      <Type>String</Type>
+      <Description>Select the target object type. This choice sets feature-specific defaults and controls the available workflow choices.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Workflow</Name>
+      <Type>String</Type>
+      <Description>Select Feature Extraction to create target features, Embedding Similarity to find imagery resembling examples, or Damage Assessment to compare target features with post-event similarity results. Available choices depend on Feature Type.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Input Target Features (Optional)</Name>
+      <Type>Polygon Feature Layer</Type>
+      <Description>Optional target polygons for the Damage Assessment workflow. When supplied, feature extraction is skipped and the polygons are used to measure post-event similarity evidence.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Area of Interest Polygon (Optional; Clips Supplied Targets and Overrides Extent)</Name>
+      <Type>Polygon Feature Layer</Type>
+      <Description>Optional analysis boundary. It clips supplied target features and overrides the Extent environment. An AOI or a defined Extent environment is required when imagery must be processed.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Feature Extraction Imagery Source</Name>
+      <Type>String</Type>
+      <Description>Choose Input Imagery to use a raster layer from the active map, or World Imagery Wayback to download a selected historical World Imagery release for feature extraction.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Feature Extraction Imagery Layer (from Active Map)</Name>
+      <Type>Raster Layer</Type>
+      <Description>Select the active-map raster layer used for SAM3 feature extraction when Feature Extraction Imagery Source is Input Imagery.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Feature Extraction World Imagery Wayback Release</Name>
+      <Type>String</Type>
+      <Description>Select the World Imagery Wayback release used for feature extraction. The list is filtered when local imagery-change metadata is available.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Custom Extraction Model (.dlpk, Optional; Default: Living Atlas SAM3)</Name>
+      <Type>Deep Learning Package</Type>
+      <Description>Optional local deep learning package that overrides the default Living Atlas SAM3 model used for target-feature extraction.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Custom SAM3 Text Prompt</Name>
+      <Type>String</Type>
+      <Description>Text prompt supplied to SAM3 when Feature Type is Custom. Describe the object concept to extract.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Feature Detection Cell Size</Name>
+      <Type>Double</Type>
+      <Description>Output cell size, in meters, for SAM3 feature extraction. Smaller values can improve detail but increase processing time and GPU memory use.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Post-Event Imagery Source</Name>
+      <Type>String</Type>
+      <Description>Choose Input Imagery, Current World Imagery, or World Imagery Wayback as the imagery source used to generate post-event embeddings.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Post-Event Imagery Layer (from Active Map)</Name>
+      <Type>Raster Layer</Type>
+      <Description>Select the active-map raster layer used for post-event embedding generation when Post-Event Imagery Source is Input Imagery.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Post-Event World Imagery Wayback Release</Name>
+      <Type>String</Type>
+      <Description>Select the World Imagery Wayback release used as the post-event imagery source.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Example Points for Similarity Search (Minimum 6)</Name>
+      <Type>Point or Multipoint Feature Layer</Type>
+      <Description>Provide at least six representative example points. Each point must intersect a unique embedding cell; the selected cells define the imagery appearance used by the similarity search.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>ArcGIS Online Embedding Model</Name>
+      <Type>String</Type>
+      <Description>Select the ArcGIS Online embedding model to download and use when a custom embedding model is not provided.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Custom Embedding Model (.dlpk, Optional Override)</Name>
+      <Type>Deep Learning Package</Type>
+      <Description>Optional local embedding model package that overrides the ArcGIS Online Embedding Model selection.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>GPU ID</Name>
+      <Type>Long Integer</Type>
+      <Description>Identifier of the GPU used by SAM3 and embedding generation. The default is GPU 0.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Batch Size</Name>
+      <Type>Long Integer</Type>
+      <Description>Number of imagery tiles processed per deep-learning batch. Larger values may improve throughput but require more GPU memory.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Embedding Grid Size (Optional; Blank = Auto)</Name>
+      <Type>Long Integer</Type>
+      <Description>Spacing factor for embedding generation. Leave blank to use the feature-type recommendation, or provide a positive integer to override it. Smaller grids provide finer spatial detail and increase processing time.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Similarity Threshold</Name>
+      <Type>Double</Type>
+      <Description>Minimum embedding-similarity score from greater than 0 through 1. Higher values retain only imagery cells more similar to the example points.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Output Features</Name>
+      <Type>Feature Class</Type>
+      <Description>Required output feature class for extracted features, debris coverage polygons, similar embedding cells, or classified target features. Store the output in a file or enterprise geodatabase.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Moderate Damage Minimum Coverage (%)</Name>
+      <Type>Double</Type>
+      <Description>Minimum percentage of a target feature covered by similar embedding cells for the Moderate Damage Evidence class. Used only by Damage Assessment.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>High Damage Minimum Coverage (%)</Name>
+      <Type>Double</Type>
+      <Description>Minimum percentage of a target feature covered by similar embedding cells for the High Damage Evidence class. Used only by Damage Assessment and must exceed the Moderate threshold.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Target Features Used</Name>
+      <Type>Derived Feature Class</Type>
+      <Description>Derived output containing the supplied or extracted target features used by the tool.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Post-Event Embeddings</Name>
+      <Type>Derived Feature Class</Type>
+      <Description>Derived output containing polygon embedding cells and BLOB embedding values generated from post-event imagery, or the selected existing embeddings.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Similar Embedding Features</Name>
+      <Type>Derived Feature Class</Type>
+      <Description>Derived output containing post-event embedding cells that meet the similarity threshold for the selected example points.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Keep Intermediate Data</Name>
+      <Type>Boolean</Type>
+      <Description>Keep generated target features, post-event embeddings, and similar embedding features after successful processing. Clear this option to delete generated intermediate datasets.</Description>
+    </Parameter>
+    <Parameter>
+      <Name>Existing Post-Event Embeddings (Optional; Skips Generation)</Name>
+      <Type>Polygon Feature Layer</Type>
+      <Description>Optional existing embedding feature class with a BLOB embedding field. When supplied, post-event imagery preparation and embedding generation are skipped.</Description>
+    </Parameter>
+  </Parameters>
+  <distInfo>
+    <distributor>
+      <distorFormat>
+        <formatName>ArcToolbox Toolbox</formatName>
+      </distorFormat>
+    </distributor>
+  </distInfo>
+  <mdHrLv>
+    <ScopeCd value="005"/>
+  </mdHrLv>
+  <mdDateSt Sync="TRUE">20260812</mdDateSt>
+</metadata>

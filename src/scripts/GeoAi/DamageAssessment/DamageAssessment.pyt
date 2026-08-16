@@ -143,34 +143,34 @@ class Toolbox(object):
 
 
 class AutomatedDamageAssessment(object):
-    IN_TARGET = 0
-    FEATURE_TYPE = 1
-    AOI = 2
-    PRE_SOURCE = 3
-    PRE_IMAGE = 4
-    PRE_WAYBACK = 5
-    SAM_MODEL = 6
-    CUSTOM_PROMPT = 7
-    DETECTION_CELL_SIZE = 8
-    POST_SOURCE = 9
-    POST_IMAGE = 10
-    POST_WAYBACK = 11
-    SAMPLE_POINTS = 12
-    ONLINE_EMBEDDING_MODEL = 13
-    EMBEDDING_MODEL = 14
-    GPU_ID = 15
-    BATCH_SIZE = 16
-    GRID_SIZE = 17
-    SIMILARITY_THRESHOLD = 18
-    OUT_CLASSIFIED = 19
-    MODERATE_THRESHOLD = 20
-    HIGH_THRESHOLD = 21
-    OUT_TARGET = 22
-    OUT_EMBEDDINGS = 23
-    OUT_SIMILAR = 24
-    KEEP_INTERMEDIATE = 25
-    EXISTING_EMBEDDINGS = 26
-    WORKFLOW = 27
+    FEATURE_TYPE = 0
+    WORKFLOW = 1
+    IN_TARGET = 2
+    AOI = 3
+    PRE_SOURCE = 4
+    PRE_IMAGE = 5
+    PRE_WAYBACK = 6
+    SAM_MODEL = 7
+    CUSTOM_PROMPT = 8
+    DETECTION_CELL_SIZE = 9
+    POST_SOURCE = 10
+    POST_IMAGE = 11
+    POST_WAYBACK = 12
+    SAMPLE_POINTS = 13
+    ONLINE_EMBEDDING_MODEL = 14
+    EMBEDDING_MODEL = 15
+    GPU_ID = 16
+    BATCH_SIZE = 17
+    GRID_SIZE = 18
+    SIMILARITY_THRESHOLD = 19
+    OUT_CLASSIFIED = 20
+    MODERATE_THRESHOLD = 21
+    HIGH_THRESHOLD = 22
+    OUT_TARGET = 23
+    OUT_EMBEDDINGS = 24
+    OUT_SIMILAR = 25
+    KEEP_INTERMEDIATE = 26
+    EXISTING_EMBEDDINGS = 27
 
     def __init__(self):
         self.label = "Automated Damage Assessment"
@@ -486,8 +486,9 @@ class AutomatedDamageAssessment(object):
         existing_embeddings.category = "3. Post-Event Similarity"
 
         return [
-            in_target,
             feature_type,
+            workflow,
+            in_target,
             aoi,
             pre_source,
             pre_image,
@@ -513,7 +514,6 @@ class AutomatedDamageAssessment(object):
             out_similar,
             keep_intermediate,
             existing_embeddings,
-            workflow,
         ]
 
     def updateParameters(self, parameters):
@@ -692,21 +692,6 @@ class AutomatedDamageAssessment(object):
         existing_embeddings = parameters[self.EXISTING_EMBEDDINGS].valueAsText
         if requires_pre_event_extraction and not has_target_features:
             pre_source = parameters[self.PRE_SOURCE].valueAsText
-            if pre_source == "Input Imagery" and not parameters[self.PRE_IMAGE].valueAsText:
-                parameters[self.PRE_IMAGE].setErrorMessage(
-                    "Provide feature-extraction imagery or choose World Imagery Wayback."
-                )
-            if pre_source == "World Imagery Wayback" and not parameters[self.PRE_WAYBACK].valueAsText:
-                parameters[self.PRE_WAYBACK].setErrorMessage(
-                    "Choose a feature-extraction Wayback release."
-                )
-            if (
-                parameters[self.FEATURE_TYPE].valueAsText == "Custom"
-                and not parameters[self.CUSTOM_PROMPT].valueAsText
-            ):
-                parameters[self.CUSTOM_PROMPT].setErrorMessage(
-                    "Enter the object concept that SAM3 should segment."
-                )
 
         post_source = parameters[self.POST_SOURCE].valueAsText or "Input Imagery"
         if extracts_targets_from_post_event and post_source != "Input Imagery":
@@ -716,18 +701,7 @@ class AutomatedDamageAssessment(object):
             )
         if (
             requires_similarity
-            and
-            not existing_embeddings
-            and post_source == "Input Imagery"
-            and not parameters[self.POST_IMAGE].valueAsText
-        ):
-            parameters[self.POST_IMAGE].setErrorMessage(
-                "Provide post-event imagery or choose World Imagery Wayback."
-            )
-        if (
-            requires_similarity
-            and
-            not existing_embeddings
+            and not existing_embeddings
             and post_source == "World Imagery Wayback"
             and not parameters[self.POST_WAYBACK].valueAsText
         ):
@@ -743,10 +717,6 @@ class AutomatedDamageAssessment(object):
                     "No local Wayback release is available after the selected "
                     "pre-event release. Choose an earlier pre-event release or use "
                     "input post-event imagery."
-                )
-            else:
-                parameters[self.POST_WAYBACK].setErrorMessage(
-                    "Choose a post-event Wayback release."
                 )
 
         if self._filtered_wayback_releases:
@@ -813,11 +783,7 @@ class AutomatedDamageAssessment(object):
             )
 
         sample_parameter = parameters[self.SAMPLE_POINTS]
-        if requires_similarity and not sample_parameter.valueAsText:
-            sample_parameter.setErrorMessage(
-                "Provide at least 6 example point features for similarity search."
-            )
-        elif requires_similarity and sample_parameter.value:
+        if requires_similarity and sample_parameter.value:
             try:
                 sample_count = int(
                     arcpy.management.GetCount(sample_parameter.value)[0]
@@ -3589,10 +3555,25 @@ def _create_debris_clusters(
         )
         cluster_count = int(arcpy.management.GetCount(cluster_layer)[0])
         arcpy.management.CopyFeatures(cluster_layer, output_features)
+        removed_small_clusters = 0
+        with arcpy.da.UpdateCursor(output_features, ["SHAPE@"]) as cursor:
+            for (geometry,) in cursor:
+                if (
+                    not geometry
+                    or geometry.getArea("GEODESIC", "SQUAREMETERS") < 4.0
+                ):
+                    cursor.deleteRow()
+                    removed_small_clusters += 1
+        cluster_count -= removed_small_clusters
         messages.addMessage(
             f"Created {cluster_count:,} debris polygon cluster(s) from matching "
             "embedding cells; sparse matches were excluded."
         )
+        if removed_small_clusters:
+            messages.addMessage(
+                f"Excluded {removed_small_clusters:,} debris polygon(s) smaller "
+                "than 4 square meters."
+            )
     finally:
         for dataset in (
             aggregated_features,
