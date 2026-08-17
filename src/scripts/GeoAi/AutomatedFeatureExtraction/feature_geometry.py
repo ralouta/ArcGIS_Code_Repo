@@ -8,33 +8,32 @@ def clean_road_surfaces(
 ):
     repaired_features = arcpy.CreateUniqueName("road_repaired", scratch_workspace)
     screened_features = arcpy.CreateUniqueName("road_screened", scratch_workspace)
-    contracted_features = arcpy.CreateUniqueName("road_contracted", scratch_workspace)
-    dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
-    hole_filled_features = arcpy.CreateUniqueName("road_hole_filled", scratch_workspace)
+    simplified_features = arcpy.CreateUniqueName("road_simplified", scratch_workspace)
+    cleaned_features = arcpy.CreateUniqueName("road_cleaned", scratch_workspace)
     polygon_boundary_features = arcpy.CreateUniqueName("road_boundaries", scratch_workspace)
     polygon_boundary_lines = arcpy.CreateUniqueName("road_boundary_lines", scratch_workspace)
     centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
-    smoothed_centerline_features = arcpy.CreateUniqueName(
-        "road_smoothed_centerlines", scratch_workspace
+    simplified_centerline_features = arcpy.CreateUniqueName(
+        "road_simplified_centerlines", scratch_workspace
     )
     buffered_features = arcpy.CreateUniqueName("road_reconstructed", scratch_workspace)
     dissolved_output_features = arcpy.CreateUniqueName("road_final", scratch_workspace)
-    contraction_distance = meters_to_spatial_units(
-        profile["road_contraction_m"], spatial_reference
+    mask_simplification = meters_to_spatial_units(
+        profile["road_mask_simplification_m"], spatial_reference
     )
     centerline_extension = meters_to_spatial_units(
         profile["road_centerline_extension_m"], spatial_reference
     )
-    centerline_smoothing = meters_to_spatial_units(
-        profile["road_centerline_smoothing_m"], spatial_reference
+    centerline_simplification = meters_to_spatial_units(
+        profile["road_centerline_simplification_m"], spatial_reference
     )
-    hole_fill_area = square_meters_to_spatial_units(
-        profile["road_hole_fill_sqm"], spatial_reference
+    minimum_part_area = square_meters_to_spatial_units(
+        profile["road_minimum_part_area_sqm"], spatial_reference
     )
     try:
         messages.addMessage(
-            "Running road-surface QA: repairing masks, removing small fragments, "
-            "and reconstructing polygons from smoothed centerlines..."
+            "Running road-surface QA: simplifying masks, removing small parts, and "
+            "reconstructing polygons from straight-preserving centerlines..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
@@ -48,21 +47,27 @@ def clean_road_surfaces(
                 f"Rejected {rejected_mask_count:,} road fragment(s) below "
                 f"{profile['minimum_area_sqm']:g} sq m."
             )
-        arcpy.analysis.PairwiseBuffer(
-            screened_features, contracted_features, -contraction_distance
+        arcpy.cartography.SimplifyPolygon(
+            screened_features,
+            simplified_features,
+            "POINT_REMOVE",
+            mask_simplification,
+            minimum_area=minimum_part_area,
+            error_option="RESOLVE_ERRORS",
         )
-        arcpy.management.RepairGeometry(contracted_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(contracted_features)[0]):
-            raise arcpy.ExecuteError("Road QA contraction removed all polygon masks.")
-        arcpy.analysis.PairwiseDissolve(contracted_features, dissolved_features)
-        arcpy.analysis.PairwiseBuffer(dissolved_features, hole_filled_features, contraction_distance)
         arcpy.management.EliminatePolygonPart(
-            in_features=hole_filled_features,
-            out_feature_class=polygon_boundary_features,
+            in_features=simplified_features,
+            out_feature_class=cleaned_features,
             condition="AREA",
-            part_area=hole_fill_area,
+            part_area=minimum_part_area,
             part_area_percent="0",
-            part_option="CONTAINED_ONLY",
+            part_option="ANY",
+        )
+        filter_by_minimum_geodesic_area(
+            cleaned_features,
+            polygon_boundary_features,
+            profile["road_minimum_part_area_sqm"],
+            scratch_workspace,
         )
         arcpy.topographic.PolygonToCenterline(
             polygon_boundary_features, centerline_features
@@ -81,16 +86,15 @@ def clean_road_surfaces(
         )
         calculate_road_buffer_widths(centerline_features, profile, spatial_reference)
         arcpy.edit.ExtendLine(centerline_features, centerline_extension, "EXTENSION")
-        arcpy.cartography.SmoothLine(
+        arcpy.cartography.SimplifyLine(
             centerline_features,
-            smoothed_centerline_features,
-            algorithm="PAEK",
-            tolerance=centerline_smoothing,
-            endpoint_option="FIXED_CLOSED_ENDPOINT",
+            simplified_centerline_features,
+            "POINT_REMOVE",
+            centerline_simplification,
             error_option="RESOLVE_ERRORS",
         )
         arcpy.analysis.PairwiseBuffer(
-            smoothed_centerline_features,
+            simplified_centerline_features,
             buffered_features,
             "AFE_HALF_WIDTH",
             dissolve_option="NONE",
@@ -106,11 +110,12 @@ def clean_road_surfaces(
         if not int(arcpy.management.GetCount(output_features)[0]):
             raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
         messages.addMessage(
-            "Road-surface QA reconstructed polygons from centerlines with a {0:g} m "
-            "extension, {1:g} m smoothing, and half-widths constrained to {2:g}-{3:g} m."
+            "Road-surface QA simplified masks and centerlines using point removal, "
+            "removed parts below {0:g} sq m, extended centerlines {1:g} m, and "
+            "reconstructed polygons with half-widths constrained to {2:g}-{3:g} m."
             .format(
+                profile["road_minimum_part_area_sqm"],
                 profile["road_centerline_extension_m"],
-                profile["road_centerline_smoothing_m"],
                 profile["road_minimum_half_width_m"],
                 profile["road_maximum_half_width_m"],
             )
@@ -122,10 +127,9 @@ def clean_road_surfaces(
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
         for dataset in (
-            repaired_features, screened_features, contracted_features, dissolved_features,
-            hole_filled_features, polygon_boundary_features, polygon_boundary_lines,
-            centerline_features,
-            smoothed_centerline_features, buffered_features, dissolved_output_features,
+            repaired_features, screened_features, simplified_features, cleaned_features,
+            polygon_boundary_features, polygon_boundary_lines, centerline_features,
+            simplified_centerline_features, buffered_features, dissolved_output_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
@@ -180,20 +184,21 @@ def clean_agricultural_fields(
     cleaned_parts_features = arcpy.CreateUniqueName("field_cleaned_parts", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
     expanded_features = arcpy.CreateUniqueName("field_expanded", scratch_workspace)
-    smoothed_features = arcpy.CreateUniqueName("field_smoothed", scratch_workspace)
+    simplified_features = arcpy.CreateUniqueName("field_simplified", scratch_workspace)
+    singlepart_features = arcpy.CreateUniqueName("field_singlepart", scratch_workspace)
     contraction_distance = meters_to_spatial_units(
         profile["field_contraction_m"], spatial_reference
     )
     hole_fill_area = square_meters_to_spatial_units(
         profile["field_hole_fill_sqm"], spatial_reference
     )
-    smoothing_tolerance = meters_to_spatial_units(
-        profile["field_smoothing_m"], spatial_reference
+    boundary_simplification = meters_to_spatial_units(
+        profile["field_boundary_simplification_m"], spatial_reference
     )
     try:
         messages.addMessage(
             "Running agricultural-field QA: repairing masks, removing small fragments, "
-            "and applying conservative shrink-clean-expand cleanup..."
+            "and applying parcel-scale boundary generalization..."
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
@@ -234,17 +239,19 @@ def clean_agricultural_fields(
         arcpy.analysis.PairwiseBuffer(
             cleaned_features, expanded_features, contraction_distance
         )
-        arcpy.cartography.SmoothPolygon(
+        arcpy.cartography.SimplifyPolygon(
             in_features=expanded_features,
-            out_feature_class=smoothed_features,
-            algorithm="PAEK",
-            tolerance=smoothing_tolerance,
-            endpoint_option="FIXED_ENDPOINT",
+            out_feature_class=simplified_features,
+            algorithm="POINT_REMOVE",
+            tolerance=boundary_simplification,
+            minimum_area=0,
             error_option="RESOLVE_ERRORS",
         )
-        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
+        arcpy.management.RepairGeometry(simplified_features, "DELETE_NULL", "ESRI")
+        arcpy.management.MultipartToSinglepart(simplified_features, singlepart_features)
+        arcpy.management.RepairGeometry(singlepart_features, "DELETE_NULL", "ESRI")
         filter_by_minimum_geodesic_area(
-            smoothed_features,
+            singlepart_features,
             output_features,
             profile["field_minimum_area_sqm"],
             scratch_workspace,
@@ -254,13 +261,13 @@ def clean_agricultural_fields(
         messages.addMessage(
             "Agricultural-field QA applied a {0:g} m shrink-clean-expand pass, removed "
             "fragments below {1:g} sq m, eliminated contained parts below {2:g}%, filled "
-            "{3:g} sq m enclosed holes, and applied {4:g} m boundary smoothing."
+            "{3:g} sq m enclosed holes, and simplified boundaries at {4:g} m."
             .format(
                 profile["field_contraction_m"],
                 profile["field_minimum_area_sqm"],
                 profile["field_part_area_percent"],
                 profile["field_hole_fill_sqm"],
-                profile["field_smoothing_m"],
+                profile["field_boundary_simplification_m"],
             )
         )
     except Exception as error:
@@ -271,7 +278,8 @@ def clean_agricultural_fields(
     finally:
         for dataset in (
             repaired_features, screened_features, dissolved_features, contracted_features,
-            cleaned_parts_features, cleaned_features, expanded_features, smoothed_features,
+            cleaned_parts_features, cleaned_features, expanded_features, simplified_features,
+            singlepart_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
