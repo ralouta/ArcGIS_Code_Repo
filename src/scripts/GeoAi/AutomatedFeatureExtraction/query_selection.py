@@ -75,10 +75,10 @@ def select_feature_embedding_queries(
         messages.addMessage(
             f"{class_label}: {point_count} example point(s) selected {target_count} intersecting target feature(s)."
         )
-        if target_count < 6:
+        if target_count == 0:
             raise arcpy.ExecuteError(
-                f"{class_label} needs example points that intersect at least 6 unique "
-                f"target features; {point_count} point(s) selected {target_count} target feature(s)."
+                f"{class_label} needs at least one example point that intersects an "
+                f"extracted target feature; {point_count} point(s) selected no target features."
             )
         arcpy.management.CopyFeatures(target_layer, seed_features)
         arcpy.management.MakeFeatureLayer(embedding_features, embedding_layer)
@@ -88,8 +88,13 @@ def select_feature_embedding_queries(
         cell_count = int(arcpy.management.GetCount(embedding_layer)[0])
         if cell_count < 6:
             raise arcpy.ExecuteError(
-                "The selected example target features must intersect at least 6 unique embedding cells; "
-                f"{cell_count} cell(s) were selected."
+                f"{class_label} needs target features that intersect at least 6 unique "
+                f"embedding cells; {target_count} target feature(s) selected {cell_count} cell(s)."
+            )
+        if target_count < 6:
+            messages.addWarningMessage(
+                f"{class_label} uses {target_count} target feature(s), but its "
+                f"{cell_count} embedding cells satisfy the similarity evidence requirement."
             )
         arcpy.management.CopyFeatures(embedding_layer, query_features)
         messages.addMessage(

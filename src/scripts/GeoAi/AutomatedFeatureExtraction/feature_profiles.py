@@ -253,7 +253,7 @@ FEATURE_PROFILES = {
     "Agricultural Fields": {
         "prompt": "agricultural field",
         "detection_cell_size": 0.5,
-        "embedding_grid_size": 11,
+        "embedding_grid_size": 3,
         "regularize": False,
         "feature_code": "AGRICULTURAL_COVER_CANDIDATE",
         "production_geometry": "Polygon",

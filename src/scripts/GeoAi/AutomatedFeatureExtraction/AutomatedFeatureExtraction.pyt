@@ -456,6 +456,13 @@ class AutomatedFeatureExtraction(object):
         sample_points = parameters[self.SAMPLE_POINTS].valueAsText
         if not sample_points:
             raise arcpy.ExecuteError("Provide example points for similarity analysis.")
+        if workflow == "Feature Classification":
+            _validate_class_target_coverage(
+                target_features,
+                sample_points,
+                parameters[self.CLASS_FIELD].valueAsText,
+                messages,
+            )
         generated_embeddings = None
         out_similar = None
         seed_evidence = None
@@ -811,6 +818,58 @@ def _class_value_label(feature_class, field_name, value):
         return f"{value} ({description})" if description else str(value)
     except Exception:
         return str(value)
+
+
+def _validate_class_target_coverage(target_features, sample_points, class_field, messages):
+    sample_layer = arcpy.CreateUniqueName("class_coverage_samples")
+    target_layer = arcpy.CreateUniqueName("class_coverage_targets")
+    insufficient_classes = []
+    try:
+        arcpy.management.MakeFeatureLayer(sample_points, sample_layer)
+        arcpy.management.MakeFeatureLayer(target_features, target_layer)
+        field_delimiter = arcpy.AddFieldDelimiters(sample_points, class_field)
+        field_type = next(
+            field.type for field in arcpy.ListFields(sample_points) if field.name == class_field
+        )
+        class_values = sorted(
+            {
+                value
+                for (value,) in arcpy.da.SearchCursor(sample_points, [class_field])
+                if value is not None and str(value).strip()
+            },
+            key=lambda value: str(value).casefold(),
+        )
+        for value in class_values:
+            arcpy.management.SelectLayerByAttribute(
+                sample_layer,
+                "NEW_SELECTION",
+                f"{field_delimiter} = {_sql_literal(value, field_type)}",
+            )
+            arcpy.management.SelectLayerByLocation(
+                target_layer, "INTERSECT", sample_layer, None, "NEW_SELECTION"
+            )
+            target_count = int(arcpy.management.GetCount(target_layer)[0])
+            point_count = int(arcpy.management.GetCount(sample_layer)[0])
+            class_label = _class_value_label(sample_points, class_field, value)
+            if target_count == 0:
+                insufficient_classes.append(
+                    f"{class_label}: {point_count} point(s), no intersecting target feature"
+                )
+        if insufficient_classes:
+            raise arcpy.ExecuteError(
+                "Each classification class must intersect at least one target feature "
+                "before embeddings are generated. Insufficient classes: "
+                + "; ".join(insufficient_classes)
+                + ". Add or move example points so they intersect a candidate polygon."
+            )
+        messages.addMessage(
+            "Classification preflight confirmed that every class intersects at least "
+            "one target feature; embedding coverage is validated per class next."
+        )
+    finally:
+        for layer in (sample_layer, target_layer):
+            if arcpy.Exists(layer):
+                arcpy.management.Delete(layer)
 
 
 class AutomatedDamageAssessment(object):
