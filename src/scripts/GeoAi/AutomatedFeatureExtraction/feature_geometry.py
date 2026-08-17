@@ -185,7 +185,11 @@ def clean_agricultural_fields(
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
     expanded_features = arcpy.CreateUniqueName("field_expanded", scratch_workspace)
     simplified_features = arcpy.CreateUniqueName("field_simplified", scratch_workspace)
+    sliver_buffered_features = arcpy.CreateUniqueName("field_sliver_buffered", scratch_workspace)
+    sliver_dissolved_features = arcpy.CreateUniqueName("field_sliver_dissolved", scratch_workspace)
+    sliver_closed_features = arcpy.CreateUniqueName("field_sliver_closed", scratch_workspace)
     singlepart_features = arcpy.CreateUniqueName("field_singlepart", scratch_workspace)
+    final_singlepart_features = arcpy.CreateUniqueName("field_final_singlepart", scratch_workspace)
     contraction_distance = meters_to_spatial_units(
         profile["field_contraction_m"], spatial_reference
     )
@@ -194,6 +198,9 @@ def clean_agricultural_fields(
     )
     boundary_simplification = meters_to_spatial_units(
         profile["field_boundary_simplification_m"], spatial_reference
+    )
+    sliver_closing_distance = meters_to_spatial_units(
+        profile["field_sliver_closing_m"], spatial_reference
     )
     try:
         messages.addMessage(
@@ -248,10 +255,25 @@ def clean_agricultural_fields(
             error_option="RESOLVE_ERRORS",
         )
         arcpy.management.RepairGeometry(simplified_features, "DELETE_NULL", "ESRI")
-        arcpy.management.MultipartToSinglepart(simplified_features, singlepart_features)
+        arcpy.analysis.PairwiseBuffer(
+            simplified_features, sliver_buffered_features, sliver_closing_distance
+        )
+        arcpy.analysis.PairwiseDissolve(sliver_buffered_features, sliver_dissolved_features)
+        arcpy.analysis.PairwiseBuffer(
+            sliver_dissolved_features, sliver_closed_features, -sliver_closing_distance
+        )
+        arcpy.management.EliminatePolygonPart(
+            in_features=sliver_closed_features,
+            out_feature_class=singlepart_features,
+            condition="AREA",
+            part_area=hole_fill_area,
+            part_area_percent="0",
+            part_option="CONTAINED_ONLY",
+        )
         arcpy.management.RepairGeometry(singlepart_features, "DELETE_NULL", "ESRI")
+        arcpy.management.MultipartToSinglepart(singlepart_features, final_singlepart_features)
         filter_by_minimum_geodesic_area(
-            singlepart_features,
+            final_singlepart_features,
             output_features,
             profile["field_minimum_area_sqm"],
             scratch_workspace,
@@ -261,13 +283,15 @@ def clean_agricultural_fields(
         messages.addMessage(
             "Agricultural-field QA applied a {0:g} m shrink-clean-expand pass, removed "
             "fragments below {1:g} sq m, eliminated contained parts below {2:g}%, filled "
-            "{3:g} sq m enclosed holes, and simplified boundaries at {4:g} m."
+            "{3:g} sq m enclosed holes, simplified boundaries at {4:g} m, and closed "
+            "slivers narrower than {5:g} m."
             .format(
                 profile["field_contraction_m"],
                 profile["field_minimum_area_sqm"],
                 profile["field_part_area_percent"],
                 profile["field_hole_fill_sqm"],
                 profile["field_boundary_simplification_m"],
+                profile["field_sliver_closing_m"] * 2,
             )
         )
     except Exception as error:
@@ -279,7 +303,8 @@ def clean_agricultural_fields(
         for dataset in (
             repaired_features, screened_features, dissolved_features, contracted_features,
             cleaned_parts_features, cleaned_features, expanded_features, simplified_features,
-            singlepart_features,
+            sliver_buffered_features, sliver_dissolved_features, sliver_closed_features,
+            singlepart_features, final_singlepart_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)

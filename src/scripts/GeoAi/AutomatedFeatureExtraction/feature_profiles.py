@@ -262,9 +262,10 @@ FEATURE_PROFILES = {
         "nms_overlap": 0.6,
         "field_contraction_m": 10.0,
         "field_minimum_area_sqm": 500.0,
-        "field_hole_fill_sqm": 500.0,
+        "field_hole_fill_sqm": 1000.0,
         "field_part_area_percent": 20.0,
-        "field_boundary_simplification_m": 15.0,
+        "field_boundary_simplification_m": 8.0,
+        "field_sliver_closing_m": 2.0,
     },
     "Park-Like Green Space": {
         "prompt": "park green space",
