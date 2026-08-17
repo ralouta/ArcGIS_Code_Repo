@@ -13,6 +13,7 @@ def extract_target_features(
 ):
     raw_features = arcpy.CreateUniqueName("sam3_raw", scratch_workspace)
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
+    duplicate_free_features = arcpy.CreateUniqueName("sam3_deduplicated", scratch_workspace)
     qa_features = arcpy.CreateUniqueName("sam3_qa_candidates", scratch_workspace)
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
@@ -48,18 +49,30 @@ def extract_target_features(
                 in_objects_of_interest=None,
             )
         raw_detection_count = int(arcpy.management.GetCount(raw_features)[0])
-        messages.addMessage(f"Raw SAM3 detections: {raw_detection_count}")
+        messages.addMessage(f"Raw SAM3 detections before NMS: {raw_detection_count}")
         messages.addMessage(
-            f"Removing only near-identical masks at {duplicate_iou_threshold:.0%} IoU; "
-            "all other overlapping candidates are retained."
+            f"Applying ArcGIS Non Maximum Suppression at "
+            f"{feature_profile['nms_overlap']:.0%} overlap..."
+        )
+        arcpy.ia.NonMaximumSuppression(
+            in_featureclass=raw_features,
+            confidence_score_field="Confidence",
+            out_featureclass=nms_features,
+            class_value_field="Class",
+            max_overlap_ratio=feature_profile["nms_overlap"],
+        )
+        nms_detection_count = int(arcpy.management.GetCount(nms_features)[0])
+        messages.addMessage(f"SAM3 detections after ArcGIS NMS: {nms_detection_count}")
+        messages.addMessage(
+            f"Removing residual near-identical masks at {duplicate_iou_threshold:.0%} IoU."
         )
         remove_near_duplicate_polygons(
-            raw_features, nms_features, duplicate_iou_threshold, scratch_workspace
+            nms_features, duplicate_free_features, duplicate_iou_threshold, scratch_workspace
         )
-        detection_count = int(arcpy.management.GetCount(nms_features)[0])
-        messages.addMessage(f"SAM3 detections after near-duplicate removal: {detection_count}")
+        detection_count = int(arcpy.management.GetCount(duplicate_free_features)[0])
+        messages.addMessage(f"SAM3 detections after final duplicate cleanup: {detection_count}")
         rejected_envelope_count = remove_overgrown_polygon_masks(
-            nms_features, qa_features, scratch_workspace, envelope_min_children,
+            duplicate_free_features, qa_features, scratch_workspace, envelope_min_children,
             envelope_min_coverage, envelope_max_coverage,
         )
         if rejected_envelope_count:
@@ -85,7 +98,7 @@ def extract_target_features(
         else:
             arcpy.management.CopyFeatures(qa_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features, qa_features):
+        for dataset in (raw_features, nms_features, duplicate_free_features, qa_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 

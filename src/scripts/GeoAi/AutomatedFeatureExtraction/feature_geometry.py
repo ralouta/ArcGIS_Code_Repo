@@ -185,11 +185,8 @@ def clean_agricultural_fields(
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
     expanded_features = arcpy.CreateUniqueName("field_expanded", scratch_workspace)
     simplified_features = arcpy.CreateUniqueName("field_simplified", scratch_workspace)
-    sliver_buffered_features = arcpy.CreateUniqueName("field_sliver_buffered", scratch_workspace)
-    sliver_dissolved_features = arcpy.CreateUniqueName("field_sliver_dissolved", scratch_workspace)
-    sliver_closed_features = arcpy.CreateUniqueName("field_sliver_closed", scratch_workspace)
+    smoothed_features = arcpy.CreateUniqueName("field_smoothed", scratch_workspace)
     singlepart_features = arcpy.CreateUniqueName("field_singlepart", scratch_workspace)
-    final_singlepart_features = arcpy.CreateUniqueName("field_final_singlepart", scratch_workspace)
     contraction_distance = meters_to_spatial_units(
         profile["field_contraction_m"], spatial_reference
     )
@@ -199,8 +196,8 @@ def clean_agricultural_fields(
     boundary_simplification = meters_to_spatial_units(
         profile["field_boundary_simplification_m"], spatial_reference
     )
-    sliver_closing_distance = meters_to_spatial_units(
-        profile["field_sliver_closing_m"], spatial_reference
+    boundary_smoothing = meters_to_spatial_units(
+        profile["field_boundary_smoothing_m"], spatial_reference
     )
     try:
         messages.addMessage(
@@ -255,25 +252,17 @@ def clean_agricultural_fields(
             error_option="RESOLVE_ERRORS",
         )
         arcpy.management.RepairGeometry(simplified_features, "DELETE_NULL", "ESRI")
-        arcpy.analysis.PairwiseBuffer(
-            simplified_features, sliver_buffered_features, sliver_closing_distance
+        arcpy.cartography.SmoothPolygon(
+            in_features=simplified_features,
+            out_feature_class=smoothed_features,
+            algorithm="PAEK",
+            tolerance=boundary_smoothing,
+            error_option="RESOLVE_ERRORS",
         )
-        arcpy.analysis.PairwiseDissolve(sliver_buffered_features, sliver_dissolved_features)
-        arcpy.analysis.PairwiseBuffer(
-            sliver_dissolved_features, sliver_closed_features, -sliver_closing_distance
-        )
-        arcpy.management.EliminatePolygonPart(
-            in_features=sliver_closed_features,
-            out_feature_class=singlepart_features,
-            condition="AREA",
-            part_area=hole_fill_area,
-            part_area_percent="0",
-            part_option="CONTAINED_ONLY",
-        )
-        arcpy.management.RepairGeometry(singlepart_features, "DELETE_NULL", "ESRI")
-        arcpy.management.MultipartToSinglepart(singlepart_features, final_singlepart_features)
+        arcpy.management.RepairGeometry(smoothed_features, "DELETE_NULL", "ESRI")
+        arcpy.management.MultipartToSinglepart(smoothed_features, singlepart_features)
         filter_by_minimum_geodesic_area(
-            final_singlepart_features,
+            singlepart_features,
             output_features,
             profile["field_minimum_area_sqm"],
             scratch_workspace,
@@ -283,15 +272,15 @@ def clean_agricultural_fields(
         messages.addMessage(
             "Agricultural-field QA applied a {0:g} m shrink-clean-expand pass, removed "
             "fragments below {1:g} sq m, eliminated contained parts below {2:g}%, filled "
-            "{3:g} sq m enclosed holes, simplified boundaries at {4:g} m, and closed "
-            "slivers narrower than {5:g} m."
+            "{3:g} sq m enclosed holes, simplified boundaries at {4:g} m, and smoothed "
+            "remaining corners at {5:g} m."
             .format(
                 profile["field_contraction_m"],
                 profile["field_minimum_area_sqm"],
                 profile["field_part_area_percent"],
                 profile["field_hole_fill_sqm"],
                 profile["field_boundary_simplification_m"],
-                profile["field_sliver_closing_m"] * 2,
+                profile["field_boundary_smoothing_m"],
             )
         )
     except Exception as error:
@@ -303,8 +292,7 @@ def clean_agricultural_fields(
         for dataset in (
             repaired_features, screened_features, dissolved_features, contracted_features,
             cleaned_parts_features, cleaned_features, expanded_features, simplified_features,
-            sliver_buffered_features, sliver_dissolved_features, sliver_closed_features,
-            singlepart_features, final_singlepart_features,
+            smoothed_features, singlepart_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
@@ -329,6 +317,9 @@ def regularize_building_footprints(
     )
     building_layer = arcpy.CreateUniqueName("building_regularization")
     fallback_layer = arcpy.CreateUniqueName("building_regularization_fallback")
+    deduplicated_features = arcpy.CreateUniqueName(
+        "regularized_buildings_deduplicated", scratch_workspace
+    )
     regularized_outputs = []
 
     try:
@@ -400,10 +391,65 @@ def regularize_building_footprints(
                 )
                 arcpy.management.Append(fallback_layer, output_features, "NO_TEST")
         arcpy.management.DeleteField(output_features, [area_field, source_id_field])
+        duplicate_count = remove_contained_building_duplicates(
+            output_features, deduplicated_features, scratch_workspace
+        )
+        if duplicate_count:
+            messages.addMessage(
+                f"Removed {duplicate_count:,} nested building footprint duplicate(s)."
+            )
+            arcpy.management.Delete(output_features)
+            arcpy.management.CopyFeatures(deduplicated_features, output_features)
     finally:
-        for dataset in (building_layer, fallback_layer):
+        for dataset in (building_layer, fallback_layer, deduplicated_features):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
         for dataset in regularized_outputs:
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
+
+
+def remove_contained_building_duplicates(
+    input_features, output_features, scratch_workspace, containment_threshold=0.90,
+    minimum_area_ratio=1.20,
+):
+    candidates = []
+    with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@"]) as cursor:
+        for object_id, geometry in cursor:
+            area = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
+            if area > 0:
+                candidates.append((object_id, geometry, area))
+
+    rejected_ids = set()
+    for object_id, geometry, area in candidates:
+        for other_id, other_geometry, other_area in candidates:
+            if object_id == other_id or other_area < area * minimum_area_ratio:
+                continue
+            if geometry.disjoint(other_geometry):
+                continue
+            intersection_area = geometry.intersect(other_geometry, 4).getArea(
+                "GEODESIC", "SQUAREMETERS"
+            )
+            if intersection_area / area >= containment_threshold:
+                rejected_ids.add(object_id)
+                break
+
+    if not rejected_ids:
+        arcpy.management.CopyFeatures(input_features, output_features)
+        return 0
+
+    keep_field = "AFE_BUILDING_KEEP"
+    selection_layer = arcpy.CreateUniqueName("building_duplicate_selection", scratch_workspace)
+    try:
+        arcpy.management.AddField(input_features, keep_field, "SHORT")
+        with arcpy.da.UpdateCursor(input_features, ["OID@", keep_field]) as cursor:
+            for object_id, _ in cursor:
+                cursor.updateRow([object_id, int(object_id not in rejected_ids)])
+        field_delimiter = arcpy.AddFieldDelimiters(input_features, keep_field)
+        arcpy.management.MakeFeatureLayer(input_features, selection_layer, f"{field_delimiter} = 1")
+        arcpy.management.CopyFeatures(selection_layer, output_features)
+        arcpy.management.DeleteField(output_features, keep_field)
+    finally:
+        if arcpy.Exists(selection_layer):
+            arcpy.management.Delete(selection_layer)
+    return len(rejected_ids)
