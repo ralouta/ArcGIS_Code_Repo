@@ -265,7 +265,7 @@ FEATURE_PROFILES = {
         "field_hole_fill_sqm": 1000.0,
         "field_part_area_percent": 20.0,
         "field_boundary_simplification_m": 8.0,
-        "field_boundary_smoothing_m": 3.0,
+        "field_boundary_smoothing_m": 5.0,
     },
     "Park-Like Green Space": {
         "prompt": "park green space",

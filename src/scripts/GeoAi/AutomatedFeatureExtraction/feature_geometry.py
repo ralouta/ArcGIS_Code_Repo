@@ -179,8 +179,10 @@ def clean_agricultural_fields(
 ):
     repaired_features = arcpy.CreateUniqueName("field_repaired", scratch_workspace)
     screened_features = arcpy.CreateUniqueName("field_screened", scratch_workspace)
-    dissolved_features = arcpy.CreateUniqueName("field_dissolved", scratch_workspace)
     contracted_features = arcpy.CreateUniqueName("field_contracted", scratch_workspace)
+    contracted_singlepart_features = arcpy.CreateUniqueName(
+        "field_contracted_singlepart", scratch_workspace
+    )
     cleaned_parts_features = arcpy.CreateUniqueName("field_cleaned_parts", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("field_hole_filled", scratch_workspace)
     expanded_features = arcpy.CreateUniqueName("field_expanded", scratch_workspace)
@@ -217,15 +219,17 @@ def clean_agricultural_fields(
                 f"Rejected {rejected_count:,} agricultural fragment(s) below "
                 f"{profile['field_minimum_area_sqm']:g} sq m."
             )
-        arcpy.analysis.PairwiseDissolve(screened_features, dissolved_features)
         arcpy.analysis.PairwiseBuffer(
-            dissolved_features, contracted_features, -contraction_distance
+            screened_features, contracted_features, -contraction_distance, dissolve_option="NONE"
         )
         arcpy.management.RepairGeometry(contracted_features, "DELETE_NULL", "ESRI")
         if not int(arcpy.management.GetCount(contracted_features)[0]):
             raise arcpy.ExecuteError("Agricultural-field QA contraction removed all polygons.")
+        arcpy.management.MultipartToSinglepart(
+            contracted_features, contracted_singlepart_features
+        )
         arcpy.management.EliminatePolygonPart(
-            in_features=contracted_features,
+            in_features=contracted_singlepart_features,
             out_feature_class=cleaned_parts_features,
             condition="PERCENT",
             part_area="0 SquareMeters",
@@ -271,9 +275,9 @@ def clean_agricultural_fields(
             raise arcpy.ExecuteError("Agricultural-field QA produced no valid polygons.")
         messages.addMessage(
             "Agricultural-field QA applied a {0:g} m shrink-clean-expand pass, removed "
-            "fragments below {1:g} sq m, eliminated contained parts below {2:g}%, filled "
-            "{3:g} sq m enclosed holes, simplified boundaries at {4:g} m, and smoothed "
-            "remaining corners at {5:g} m."
+            "fragments below {1:g} sq m, split narrow field connections before restoring "
+            "parcels, eliminated contained parts below {2:g}%, filled {3:g} sq m enclosed "
+            "holes, simplified boundaries at {4:g} m, and smoothed remaining corners at {5:g} m."
             .format(
                 profile["field_contraction_m"],
                 profile["field_minimum_area_sqm"],
@@ -290,9 +294,9 @@ def clean_agricultural_fields(
         arcpy.management.CopyFeatures(input_features, output_features)
     finally:
         for dataset in (
-            repaired_features, screened_features, dissolved_features, contracted_features,
-            cleaned_parts_features, cleaned_features, expanded_features, simplified_features,
-            smoothed_features, singlepart_features,
+            repaired_features, screened_features, contracted_features,
+            contracted_singlepart_features, cleaned_parts_features, cleaned_features,
+            expanded_features, simplified_features, smoothed_features, singlepart_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
