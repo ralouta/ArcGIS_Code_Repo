@@ -86,7 +86,7 @@ class FindFeaturesNearFeatures(object):
                 search_distance,
                 "NEW_SELECTION",
             )
-            selected_count = int(result.getOutput(1))
+            selected_count = int(arcpy.management.GetCount(layer_name)[0])
             arcpy.management.CopyFeatures(layer_name, out_features)
             arcpy.AddMessage(
                 "Created {} with {} feature(s) within {} of the proximity features.".format(
