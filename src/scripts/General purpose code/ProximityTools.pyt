@@ -59,7 +59,7 @@ class FindFeaturesNearFeatures(object):
         output_features = arcpy.Parameter(
             displayName="Output Features",
             name="out_features",
-            datatype="DEFeatureClass",
+            datatype="GPFeatureRecordSetLayer",
             parameterType="Required",
             direction="Output",
         )

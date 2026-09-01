@@ -14,7 +14,7 @@
       <param name="in_features" displayname="Input Features" datatype="GPFeatureLayer" direction="Input" type="Required"><dialogReference>Features to evaluate for proximity. Example: reported safety issues, addresses, or assets.</dialogReference></param>
       <param name="proximity_features" displayname="Proximity Features" datatype="GPFeatureLayer" direction="Input" type="Required"><dialogReference>Reference features used to find nearby input features. Example: schools, evacuation routes, inspection areas, or a selected point.</dialogReference></param>
       <param name="search_distance" displayname="Search Distance" datatype="GPLinearUnit" direction="Input" type="Required"><dialogReference>Geodesic distance used for the selection. Example: 500 Meters or 2 Miles.</dialogReference></param>
-      <param name="out_features" displayname="Output Features" datatype="DEFeatureClass" direction="Output" type="Required"><dialogReference>Feature class containing input features within the search distance. Example: C:\data\analysis.gdb\issues_near_schools.</dialogReference></param>
+      <param name="out_features" displayname="Output Features" datatype="GPFeatureRecordSetLayer" direction="Output" type="Required"><dialogReference>Feature class containing input features within the search distance. Example: C:\data\analysis.gdb\issues_near_schools.</dialogReference></param>
     </parameters>
   </tool>
   <dataIdInfo>
