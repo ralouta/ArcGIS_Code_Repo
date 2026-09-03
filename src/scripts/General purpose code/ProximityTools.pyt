@@ -14,9 +14,11 @@ class FindFeaturesNearFeatures(object):
     def __init__(self):
         self.label = "Find Features Near Features"
         self.description = (
-            "Selects input features that are within a specified geodesic distance "
-            "of one or more proximity features and writes the selected features "
-            "to a new feature class."
+            "Returns input features within a specified geodesic distance of "
+            "reference features. Before supplying either optional SQL filter, "
+            "inspect that layer's schema and use its physical field names and "
+            "verified values, not display aliases. Use the SQL dialect accepted "
+            "by the referenced feature service."
         )
 
     def getParameterInfo(self):
@@ -41,8 +43,11 @@ class FindFeaturesNearFeatures(object):
         )
         input_where_clause.parameterDependencies = [input_features.name]
         input_where_clause.description = (
-            "Optional SQL expression used to filter the input features before "
-            "proximity analysis. Example: country = 'Saudi Arabia'."
+            "Optional SQL expression used to filter input features before proximity "
+            "analysis. Use a physical field name from the input layer schema, not a "
+            "field alias, and a verified value. For example, DAMAGE_CLASS = 'High "
+            "Damage Evidence' only when DAMAGE_CLASS and that value exist in the "
+            "selected layer. Leave blank to evaluate all input features."
         )
 
         proximity_features = arcpy.Parameter(
@@ -66,8 +71,11 @@ class FindFeaturesNearFeatures(object):
         )
         proximity_where_clause.parameterDependencies = [proximity_features.name]
         proximity_where_clause.description = (
-            "Optional SQL expression used to filter the proximity features before "
-            "analysis. Example: country = 'Saudi Arabia'."
+            "Optional SQL expression used to filter proximity features before "
+            "analysis. Use a physical field name from the proximity layer schema, "
+            "not a field alias, and a verified value. For example, DAMAGE_CLASS = "
+            "'High Damage Evidence' only when DAMAGE_CLASS and that value exist in "
+            "the selected layer. Leave blank to use all proximity features."
         )
 
         search_distance = arcpy.Parameter(
@@ -105,21 +113,24 @@ class FindFeaturesNearFeatures(object):
 
     def execute(self, parameters, messages):
         in_features = parameters[0].valueAsText
-        input_where_clause = parameters[1].valueAsText
+        input_where_clause = (parameters[1].valueAsText or "").strip()
         proximity_features = parameters[2].valueAsText
-        proximity_where_clause = parameters[3].valueAsText
+        proximity_where_clause = (parameters[3].valueAsText or "").strip()
         search_distance = parameters[4].valueAsText
         out_features = parameters[5].valueAsText
         input_layer_name = "proximity_candidates_{}".format(uuid.uuid4().hex)
         proximity_layer_name = "proximity_features_{}".format(uuid.uuid4().hex)
 
         try:
-            arcpy.management.MakeFeatureLayer(
-                in_features, input_layer_name, input_where_clause
-            )
-            arcpy.management.MakeFeatureLayer(
-                proximity_features, proximity_layer_name, proximity_where_clause
-            )
+            input_layer_args = [in_features, input_layer_name]
+            if input_where_clause and input_where_clause != "#":
+                input_layer_args.append(input_where_clause)
+            arcpy.management.MakeFeatureLayer(*input_layer_args)
+
+            proximity_layer_args = [proximity_features, proximity_layer_name]
+            if proximity_where_clause and proximity_where_clause != "#":
+                proximity_layer_args.append(proximity_where_clause)
+            arcpy.management.MakeFeatureLayer(*proximity_layer_args)
             arcpy.management.SelectLayerByLocation(
                 input_layer_name,
                 "WITHIN_A_DISTANCE_GEODESIC",

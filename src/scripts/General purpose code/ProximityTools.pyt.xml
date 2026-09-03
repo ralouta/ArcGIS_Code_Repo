@@ -14,8 +14,8 @@
   </toolbox>
   <dataIdInfo>
     <idCitation><resTitle>Proximity Tools</resTitle></idCitation>
-    <idPurp>Generic geoprocessing tasks for identifying features near user-supplied reference features.</idPurp>
-    <idAbs>Use these tools to identify input features near user-supplied reference features. The inputs, reference features, and search distance are chosen at run time.</idAbs>
+    <idPurp>Schema-aware geoprocessing tasks for identifying features near user-supplied reference features.</idPurp>
+    <idAbs>Use these tools to identify input features near user-supplied reference features. The inputs, reference features, and search distance are chosen at run time. When a tool accepts a SQL filter, inspect the selected layer schema first and build the expression with physical field names and verified values. Do not use display aliases as SQL field names. Use the SQL dialect accepted by the referenced feature service.</idAbs>
     <searchKeys>
       <keyword>proximity</keyword>
       <keyword>nearby features</keyword>
