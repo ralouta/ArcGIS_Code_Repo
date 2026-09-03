@@ -17,29 +17,30 @@
     <idPurp>Schema-aware geoprocessing tasks for identifying features near user-supplied reference features.</idPurp>
     <idAbs><![CDATA[
 <h2>Find Features Near Features</h2>
-<p>A synchronous geoprocessing tool that returns features within a specified geodesic distance of reference features. Use it for questions such as "how many damaged vehicles are within 10 meters of damaged buildings?"</p>
+<p>A synchronous geoprocessing tool that returns input features within a specified geodesic distance of reference features.</p>
 <h3>How It Works</h3>
-<p>The tool filters the input and reference layers when requested, selects input features within the supplied distance of the reference features, and returns the selected features as a feature set. Count the returned records when the question asks "how many."</p>
+<p>The tool optionally filters the input and reference layers, then selects input features within the supplied distance of the reference features. For count questions, use the <code>selected_feature_count</code> result. Do not count the returned feature geometry.</p>
 <h3>Parameters</h3>
 <ul>
-  <li><strong>Input Features:</strong> The features to evaluate, such as damaged vehicles. For REST requests, supply a layer object: <code>{"url":"https://.../FeatureServer/0"}</code>.</li>
+  <li><strong>Input Features:</strong> The features to evaluate. For REST requests, supply a FeatureServer layer URL: <code>https://.../FeatureServer/0</code>.</li>
   <li><strong>Input Features Where Clause:</strong> Optional SQL filter for the input features.</li>
-  <li><strong>Proximity Features:</strong> The reference features, such as damaged buildings. For REST requests, supply a layer object: <code>{"url":"https://.../FeatureServer/0"}</code>.</li>
+  <li><strong>Proximity Features:</strong> The reference features. For REST requests, supply a FeatureServer layer URL: <code>https://.../FeatureServer/0</code>.</li>
   <li><strong>Proximity Features Where Clause:</strong> Optional SQL filter for the reference features.</li>
   <li><strong>Search Distance:</strong> A linear distance such as <code>10 Meters</code>.</li>
   <li><strong>Output Features:</strong> Features from the input layer that meet the proximity condition.</li>
+  <li><strong>Selected Feature Count:</strong> The number of selected input features. Use this derived result to answer count questions.</li>
 </ul>
 <h3>SQL Filter Requirements</h3>
 <p>Before supplying either SQL where clause, inspect the schema of the selected feature layer. Use the layer's <strong>physical field names</strong> and <strong>verified attribute values</strong>; do not use display aliases as SQL field names. The expression must use SQL syntax supported by the referenced feature service.</p>
-<p>For example, use <code>DAMAGE_CLASS = 'High Damage Evidence'</code> only after confirming that <code>DAMAGE_CLASS</code> is an actual field and <code>High Damage Evidence</code> is a valid value in that layer. Leave a where clause blank to include all features from that layer.</p>
+<p>For example, use <code>FIELD_NAME = 'verified value'</code> only after confirming that both the field and value exist in the selected layer. Leave a where clause blank to include all features from that layer.</p>
 <h3>Example Workflow</h3>
 <ol>
-  <li>Select the vehicle layer as <strong>Input Features</strong>.</li>
-  <li>Filter vehicles with a verified vehicle-damage SQL expression.</li>
-  <li>Select the building layer as <strong>Proximity Features</strong>.</li>
-  <li>Filter buildings with a verified high-damage SQL expression.</li>
-  <li>Set <strong>Search Distance</strong> to <code>10 Meters</code>.</li>
-  <li>Count the returned vehicle features.</li>
+  <li>Select the layer to evaluate as <strong>Input Features</strong>.</li>
+  <li>Optionally filter the input layer with a verified SQL expression.</li>
+  <li>Select the reference layer as <strong>Proximity Features</strong>.</li>
+  <li>Optionally filter the reference layer with a verified SQL expression.</li>
+  <li>Set <strong>Search Distance</strong> to the required linear distance.</li>
+  <li>Use <code>selected_feature_count</code> to answer a count question.</li>
 </ol>
 <h3>Notes</h3>
 <ul>
