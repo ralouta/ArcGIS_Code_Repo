@@ -104,6 +104,18 @@ class FindFeaturesNearFeatures(object):
             "distance. Example: C:\\data\\analysis.gdb\\issues_near_schools."
         )
 
+        selected_feature_count = arcpy.Parameter(
+            displayName="Selected Feature Count",
+            name="selected_feature_count",
+            datatype="GPLong",
+            parameterType="Derived",
+            direction="Output",
+        )
+        selected_feature_count.description = (
+            "The number of input features within the specified distance of the "
+            "filtered proximity features."
+        )
+
         return [
             input_features,
             input_where_clause,
@@ -111,6 +123,7 @@ class FindFeaturesNearFeatures(object):
             proximity_where_clause,
             search_distance,
             output_features,
+            selected_feature_count,
         ]
 
     @staticmethod
@@ -162,6 +175,7 @@ class FindFeaturesNearFeatures(object):
             )
             selected_count = int(arcpy.management.GetCount(input_layer_name)[0])
             arcpy.management.CopyFeatures(input_layer_name, out_features)
+            parameters[6].value = selected_count
             arcpy.AddMessage(
                 "Created {} with {} feature(s) within {} of the proximity features.".format(
                     out_features, selected_count, search_distance
