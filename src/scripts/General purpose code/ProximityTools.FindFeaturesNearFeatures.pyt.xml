@@ -16,7 +16,7 @@
       <param name="proximity_features" displayname="Proximity Features" datatype="GPFeatureRecordSetLayer" direction="Input" type="Required"><dialogReference>Reference features used to find nearby input features. For REST requests, provide a layer object with a url property, for example {&quot;url&quot;: &quot;https://.../FeatureServer/0&quot;}.</dialogReference></param>
       <param name="proximity_where_clause" displayname="Proximity Features Where Clause" datatype="GPSQLExpression" direction="Input" type="Optional"><dialogReference>Optional SQL expression used to filter proximity features before analysis. Use a physical field name from the proximity layer schema, not a field alias, and a verified value. For example, DAMAGE_CLASS = 'High Damage Evidence' only when DAMAGE_CLASS and that value exist in the selected layer. Leave blank to use all proximity features.</dialogReference></param>
       <param name="search_distance" displayname="Search Distance" datatype="GPLinearUnit" direction="Input" type="Required"><dialogReference>Geodesic distance used for the selection. Example: 500 Meters or 2 Miles.</dialogReference></param>
-      <param name="out_features" displayname="Output Features" datatype="GPFeatureRecordSetLayer" direction="Output" type="Required"><dialogReference>Feature class containing input features within the search distance. Example: C:\data\analysis.gdb\issues_near_schools.</dialogReference></param>
+      <param name="out_features" displayname="Output Features" datatype="DEFeatureClass" direction="Output" type="Required"><dialogReference>New feature class containing input features within the search distance. Example: C:\data\analysis.gdb\issues_near_schools.</dialogReference></param>
     </parameters>
   </tool>
   <dataIdInfo>

@@ -95,12 +95,12 @@ class FindFeaturesNearFeatures(object):
         output_features = arcpy.Parameter(
             displayName="Output Features",
             name="out_features",
-            datatype="GPFeatureRecordSetLayer",
+            datatype="DEFeatureClass",
             parameterType="Required",
             direction="Output",
         )
         output_features.description = (
-            "The output feature class containing input features within the specified "
+            "A new feature class containing input features within the specified "
             "distance. Example: C:\\data\\analysis.gdb\\issues_near_schools."
         )
 
