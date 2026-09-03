@@ -1,5 +1,10 @@
 import arcpy
+import json
+import os
+import tempfile
 import uuid
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.request import urlopen
 
 
 class Toolbox(object):
@@ -135,6 +140,105 @@ class FindFeaturesNearFeatures(object):
             return None
         return value
 
+    @staticmethod
+    def _is_feature_service_url(value):
+        parsed_url = urlparse(value)
+        return (
+            parsed_url.scheme in ("http", "https")
+            and "/featureserver/" in parsed_url.path.lower()
+        )
+
+    @staticmethod
+    def _feature_service_request(layer_url, parameters):
+        parsed_url = urlparse(layer_url)
+        query_parameters = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
+        query_parameters.update(parameters)
+        request_url = urlunparse(
+            (
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path.rstrip("/") + "/query",
+                "",
+                urlencode(query_parameters),
+                "",
+            )
+        )
+        with urlopen(request_url) as response:
+            result = json.load(response)
+        if "error" in result:
+            raise RuntimeError(result["error"].get("message", "Feature service query failed."))
+        return result
+
+    @classmethod
+    def _feature_service_to_feature_class(cls, layer_url, where_clause, name):
+        query_parameters = {
+            "f": "json",
+            "where": where_clause or "1=1",
+            "returnIdsOnly": "true",
+        }
+        object_id_response = cls._feature_service_request(layer_url, query_parameters)
+        object_ids = object_id_response.get("objectIds", [])
+        scratch_gdb = arcpy.env.scratchGDB
+        output_feature_class = arcpy.CreateUniqueName(name, scratch_gdb)
+
+        feature_collection = None
+        for start_index in range(0, len(object_ids), 500):
+            feature_response = cls._feature_service_request(
+                layer_url,
+                {
+                    "f": "json",
+                    "objectIds": ",".join(
+                        str(object_id)
+                        for object_id in object_ids[start_index : start_index + 500]
+                    ),
+                    "outFields": "*",
+                    "returnGeometry": "true",
+                },
+            )
+            if feature_collection is None:
+                feature_collection = feature_response
+            else:
+                feature_collection["features"].extend(feature_response.get("features", []))
+
+        if feature_collection is None:
+            feature_collection = cls._feature_service_request(
+                layer_url,
+                {
+                    "f": "json",
+                    "where": "1=0",
+                    "outFields": "*",
+                    "returnGeometry": "true",
+                },
+            )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as json_file:
+            json.dump(feature_collection, json_file)
+            json_file_path = json_file.name
+
+        try:
+            arcpy.conversion.JSONToFeatures(json_file_path, output_feature_class)
+        finally:
+            os.remove(json_file_path)
+
+        return output_feature_class
+
+    @classmethod
+    def _make_input_layer(cls, source, where_clause, layer_name):
+        if cls._is_feature_service_url(source):
+            feature_class = cls._feature_service_to_feature_class(
+                source, where_clause, layer_name
+            )
+            arcpy.management.MakeFeatureLayer(feature_class, layer_name)
+            return feature_class
+
+        layer_args = [source, layer_name]
+        if where_clause:
+            layer_args.append(where_clause)
+        arcpy.management.MakeFeatureLayer(*layer_args)
+        return None
+
     def execute(self, parameters, messages):
         in_features = parameters[0].valueAsText
         input_where_clause = self._optional_where_clause(parameters[1])
@@ -144,27 +248,30 @@ class FindFeaturesNearFeatures(object):
         out_features = parameters[5].valueAsText
         input_layer_name = "proximity_candidates_{}".format(uuid.uuid4().hex)
         proximity_layer_name = "proximity_features_{}".format(uuid.uuid4().hex)
+        temporary_feature_classes = []
 
         try:
-            input_layer_args = [in_features, input_layer_name]
-            if input_where_clause:
-                input_layer_args.append(input_where_clause)
             arcpy.AddMessage(
                 "Input features where clause: {}".format(
                     input_where_clause or "<none>"
                 )
             )
-            arcpy.management.MakeFeatureLayer(*input_layer_args)
+            input_feature_class = self._make_input_layer(
+                in_features, input_where_clause, input_layer_name
+            )
+            if input_feature_class:
+                temporary_feature_classes.append(input_feature_class)
 
-            proximity_layer_args = [proximity_features, proximity_layer_name]
-            if proximity_where_clause:
-                proximity_layer_args.append(proximity_where_clause)
             arcpy.AddMessage(
                 "Proximity features where clause: {}".format(
                     proximity_where_clause or "<none>"
                 )
             )
-            arcpy.management.MakeFeatureLayer(*proximity_layer_args)
+            proximity_feature_class = self._make_input_layer(
+                proximity_features, proximity_where_clause, proximity_layer_name
+            )
+            if proximity_feature_class:
+                temporary_feature_classes.append(proximity_feature_class)
             arcpy.management.SelectLayerByLocation(
                 input_layer_name,
                 "WITHIN_A_DISTANCE_GEODESIC",
@@ -184,3 +291,6 @@ class FindFeaturesNearFeatures(object):
             for layer_name in [input_layer_name, proximity_layer_name]:
                 if arcpy.Exists(layer_name):
                     arcpy.management.Delete(layer_name)
+            for feature_class in temporary_feature_classes:
+                if arcpy.Exists(feature_class):
+                    arcpy.management.Delete(feature_class)
