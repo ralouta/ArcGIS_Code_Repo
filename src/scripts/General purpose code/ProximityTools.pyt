@@ -25,13 +25,14 @@ class FindFeaturesNearFeatures(object):
         input_features = arcpy.Parameter(
             displayName="Input Features",
             name="in_features",
-            datatype="GPFeatureLayer",
+            datatype="GPFeatureRecordSetLayer",
             parameterType="Required",
             direction="Input",
         )
         input_features.description = (
-            "The features to evaluate for proximity. Example: a layer of reported "
-            "safety issues, addresses, or assets."
+            "The features to evaluate for proximity. For REST requests, provide a "
+            "layer object with a url property, for example {\"url\": "
+            "\"https://.../FeatureServer/0\"}."
         )
 
         input_where_clause = arcpy.Parameter(
@@ -53,13 +54,14 @@ class FindFeaturesNearFeatures(object):
         proximity_features = arcpy.Parameter(
             displayName="Proximity Features",
             name="proximity_features",
-            datatype="GPFeatureLayer",
+            datatype="GPFeatureRecordSetLayer",
             parameterType="Required",
             direction="Input",
         )
         proximity_features.description = (
-            "The reference features used to find nearby input features. Example: "
-            "schools, evacuation routes, inspection areas, or a selected point."
+            "The reference features used to find nearby input features. For REST "
+            "requests, provide a layer object with a url property, for example "
+            "{\"url\": \"https://.../FeatureServer/0\"}."
         )
 
         proximity_where_clause = arcpy.Parameter(
@@ -111,11 +113,21 @@ class FindFeaturesNearFeatures(object):
             output_features,
         ]
 
+    @staticmethod
+    def _optional_where_clause(parameter):
+        value = parameter.valueAsText
+        if value is None:
+            return None
+        value = value.strip()
+        if value.lower() in ("", "#", "none", "null"):
+            return None
+        return value
+
     def execute(self, parameters, messages):
-        in_features = parameters[0].valueAsText
-        input_where_clause = (parameters[1].valueAsText or "").strip()
-        proximity_features = parameters[2].valueAsText
-        proximity_where_clause = (parameters[3].valueAsText or "").strip()
+        in_features = parameters[0].value
+        input_where_clause = self._optional_where_clause(parameters[1])
+        proximity_features = parameters[2].value
+        proximity_where_clause = self._optional_where_clause(parameters[3])
         search_distance = parameters[4].valueAsText
         out_features = parameters[5].valueAsText
         input_layer_name = "proximity_candidates_{}".format(uuid.uuid4().hex)
@@ -123,13 +135,23 @@ class FindFeaturesNearFeatures(object):
 
         try:
             input_layer_args = [in_features, input_layer_name]
-            if input_where_clause and input_where_clause != "#":
+            if input_where_clause:
                 input_layer_args.append(input_where_clause)
+            arcpy.AddMessage(
+                "Input features where clause: {}".format(
+                    input_where_clause or "<none>"
+                )
+            )
             arcpy.management.MakeFeatureLayer(*input_layer_args)
 
             proximity_layer_args = [proximity_features, proximity_layer_name]
-            if proximity_where_clause and proximity_where_clause != "#":
+            if proximity_where_clause:
                 proximity_layer_args.append(proximity_where_clause)
+            arcpy.AddMessage(
+                "Proximity features where clause: {}".format(
+                    proximity_where_clause or "<none>"
+                )
+            )
             arcpy.management.MakeFeatureLayer(*proximity_layer_args)
             arcpy.management.SelectLayerByLocation(
                 input_layer_name,
