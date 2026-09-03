@@ -25,14 +25,13 @@ class FindFeaturesNearFeatures(object):
         input_features = arcpy.Parameter(
             displayName="Input Features",
             name="in_features",
-            datatype="GPFeatureRecordSetLayer",
+            datatype="GPFeatureLayer",
             parameterType="Required",
             direction="Input",
         )
         input_features.description = (
             "The features to evaluate for proximity. For REST requests, provide a "
-            "layer object with a url property, for example {\"url\": "
-            "\"https://.../FeatureServer/0\"}."
+            "feature layer URL, for example https://.../FeatureServer/0."
         )
 
         input_where_clause = arcpy.Parameter(
@@ -54,14 +53,14 @@ class FindFeaturesNearFeatures(object):
         proximity_features = arcpy.Parameter(
             displayName="Proximity Features",
             name="proximity_features",
-            datatype="GPFeatureRecordSetLayer",
+            datatype="GPFeatureLayer",
             parameterType="Required",
             direction="Input",
         )
         proximity_features.description = (
             "The reference features used to find nearby input features. For REST "
-            "requests, provide a layer object with a url property, for example "
-            "{\"url\": \"https://.../FeatureServer/0\"}."
+            "requests, provide a feature layer URL, for example "
+            "https://.../FeatureServer/0."
         )
 
         proximity_where_clause = arcpy.Parameter(
@@ -137,9 +136,9 @@ class FindFeaturesNearFeatures(object):
         return value
 
     def execute(self, parameters, messages):
-        in_features = parameters[0].value
+        in_features = parameters[0].valueAsText
         input_where_clause = self._optional_where_clause(parameters[1])
-        proximity_features = parameters[2].value
+        proximity_features = parameters[2].valueAsText
         proximity_where_clause = self._optional_where_clause(parameters[3])
         search_distance = parameters[4].valueAsText
         out_features = parameters[5].valueAsText
