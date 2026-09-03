@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en">
+  <Esri>
+    <CreaDate>20260901</CreaDate>
+    <CreaTime>00000000</CreaTime>
+    <ArcGISFormat>1.0</ArcGISFormat>
+    <SyncOnce>TRUE</SyncOnce>
+    <ArcGISProfile>ItemDescription</ArcGISProfile>
+  </Esri>
+  <toolbox name="ProximityTools" alias="proximitytools">
+    <displayName>Proximity Tools</displayName>
+    <arcToolboxHelpPath>c:\program files\arcgis\pro\Resources\Help\gp</arcToolboxHelpPath>
+    <toolsets/>
+  </toolbox>
+  <dataIdInfo>
+    <idCitation><resTitle>Proximity Tools</resTitle></idCitation>
+    <idPurp>Generic geoprocessing tasks for identifying features near user-supplied reference features.</idPurp>
+    <idAbs>Use these tools to identify input features near user-supplied reference features. The inputs, reference features, and search distance are chosen at run time.</idAbs>
+    <searchKeys>
+      <keyword>proximity</keyword>
+      <keyword>nearby features</keyword>
+      <keyword>geoprocessing</keyword>
+    </searchKeys>
+  </dataIdInfo>
+  <distInfo><distributor><distorFormat><formatName>ArcToolbox Toolbox</formatName></distorFormat></distributor></distInfo>
+  <mdHrLv><ScopeCd value="005"/></mdHrLv>
+  <mdDateSt Sync="TRUE">20260901</mdDateSt>
+</metadata>

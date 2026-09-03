@@ -15,6 +15,9 @@ def extract_target_features(
     nms_features = arcpy.CreateUniqueName("sam3_nms", scratch_workspace)
     duplicate_free_features = arcpy.CreateUniqueName("sam3_deduplicated", scratch_workspace)
     qa_features = arcpy.CreateUniqueName("sam3_qa_candidates", scratch_workspace)
+    agricultural_parent_free_features = arcpy.CreateUniqueName(
+        "sam3_agricultural_parent_free", scratch_workspace
+    )
     safe_feature_type = re.sub("[^A-Za-z0-9_]+", "_", feature_type)
     target_features = arcpy.CreateUniqueName(
         f"{output_name_prefix(output_features)}_{safe_feature_type}", output_workspace
@@ -81,6 +84,24 @@ def extract_target_features(
                 "multiple distinct smaller detections."
             )
 
+        if feature_type == "Agricultural Fields":
+            rejected_parent_count = remove_overgrown_polygon_masks(
+                qa_features,
+                agricultural_parent_free_features,
+                scratch_workspace,
+                feature_profile["field_parent_min_children"],
+                feature_profile["field_parent_min_coverage"],
+                feature_profile["field_parent_max_coverage"],
+                feature_profile["field_parent_max_child_area_ratio"],
+            )
+            if rejected_parent_count:
+                messages.addMessage(
+                    f"Rejected {rejected_parent_count:,} agricultural parent mask(s) covered "
+                    "by smaller field detections."
+                )
+            arcpy.management.Delete(qa_features)
+            arcpy.management.CopyFeatures(agricultural_parent_free_features, qa_features)
+
         if feature_profile["regularize"]:
             regularize_building_footprints(
                 qa_features, target_features, spatial_reference, scratch_workspace, messages
@@ -98,7 +119,10 @@ def extract_target_features(
         else:
             arcpy.management.CopyFeatures(qa_features, target_features)
     finally:
-        for dataset in (raw_features, nms_features, duplicate_free_features, qa_features):
+        for dataset in (
+            raw_features, nms_features, duplicate_free_features, qa_features,
+            agricultural_parent_free_features,
+        ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
 
@@ -156,7 +180,7 @@ def remove_near_duplicate_polygons(input_features, output_features, iou_threshol
 
 def remove_overgrown_polygon_masks(
     input_features, output_features, scratch_workspace, minimum_children,
-    minimum_coverage, maximum_coverage,
+    minimum_coverage, maximum_coverage, maximum_child_area_ratio=0.5,
 ):
     candidates = []
     with arcpy.da.SearchCursor(input_features, ["OID@", "SHAPE@", "Confidence"]) as cursor:
@@ -169,7 +193,11 @@ def remove_overgrown_polygon_masks(
     for object_id, geometry, area, _ in candidates:
         contained_masks = []
         for other_id, other_geometry, other_area, _ in candidates:
-            if other_id == object_id or other_area >= area * 0.5 or geometry.disjoint(other_geometry):
+            if (
+                other_id == object_id
+                or other_area >= area * maximum_child_area_ratio
+                or geometry.disjoint(other_geometry)
+            ):
                 continue
             intersection = geometry.intersect(other_geometry, 4)
             intersection_area = intersection.getArea("GEODESIC", "SQUAREMETERS")

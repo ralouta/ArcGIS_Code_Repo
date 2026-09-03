@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en">
+  <Esri>
+    <CreaDate>20260901</CreaDate>
+    <CreaTime>00000000</CreaTime>
+    <ArcGISFormat>1.0</ArcGISFormat>
+    <SyncOnce>TRUE</SyncOnce>
+    <ArcGISProfile>ItemDescription</ArcGISProfile>
+  </Esri>
+  <tool name="FindFeaturesNearFeatures" displayname="Find Features Near Features" toolboxalias="proximitytools" toolalias="FindFeaturesNearFeatures">
+    <displayName>Find Features Near Features</displayName>
+    <arcToolboxHelpPath>c:\program files\arcgis\pro\Resources\Help\gp</arcToolboxHelpPath>
+    <parameters>
+      <param name="in_features" displayname="Input Features" datatype="GPFeatureLayer" direction="Input" type="Required"><dialogReference>Features to evaluate for proximity. Example: reported safety issues, addresses, or assets.</dialogReference></param>
+      <param name="input_where_clause" displayname="Input Features Where Clause" datatype="GPSQLExpression" direction="Input" type="Optional"><dialogReference>Optional SQL expression used to filter input features before analysis. Example: country = 'Saudi Arabia'.</dialogReference></param>
+      <param name="proximity_features" displayname="Proximity Features" datatype="GPFeatureLayer" direction="Input" type="Required"><dialogReference>Reference features used to find nearby input features. Example: schools, evacuation routes, inspection areas, or a selected point.</dialogReference></param>
+      <param name="proximity_where_clause" displayname="Proximity Features Where Clause" datatype="GPSQLExpression" direction="Input" type="Optional"><dialogReference>Optional SQL expression used to filter proximity features before analysis. Example: country = 'Saudi Arabia'.</dialogReference></param>
+      <param name="search_distance" displayname="Search Distance" datatype="GPLinearUnit" direction="Input" type="Required"><dialogReference>Geodesic distance used for the selection. Example: 500 Meters or 2 Miles.</dialogReference></param>
+      <param name="out_features" displayname="Output Features" datatype="GPFeatureRecordSetLayer" direction="Output" type="Required"><dialogReference>Feature class containing input features within the search distance. Example: C:\data\analysis.gdb\issues_near_schools.</dialogReference></param>
+    </parameters>
+  </tool>
+  <dataIdInfo>
+    <idCitation><resTitle>Find Features Near Features</resTitle></idCitation>
+    <idPurp>Selects features that are within a user-specified geodesic distance of user-supplied reference features.</idPurp>
+    <idAbs>Use this tool when the features to evaluate and the reference features must be chosen at run time. Optional SQL where clauses can filter either layer before analysis. For example, find Saudi Arabian oil and gas fields within 200 Kilometers of ACLED events where country = 'Saudi Arabia'.</idAbs>
+    <searchKeys>
+      <keyword>find nearby features</keyword>
+      <keyword>geodesic distance</keyword>
+      <keyword>proximity analysis</keyword>
+    </searchKeys>
+  </dataIdInfo>
+  <distInfo><distributor><distorFormat><formatName>ArcToolbox Tool</formatName></distorFormat></distributor></distInfo>
+  <mdHrLv><ScopeCd value="005"/></mdHrLv>
+  <mdDateSt Sync="TRUE">20260901</mdDateSt>
+</metadata>
