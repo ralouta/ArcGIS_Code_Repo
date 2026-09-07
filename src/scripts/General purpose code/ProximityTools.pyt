@@ -329,20 +329,18 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
 
     def getParameterInfo(self):
         parameters = super().getParameterInfo()
-        del parameters[3]
-        del parameters[1]
-        parameters[3] = arcpy.Parameter(
+        parameters[5] = arcpy.Parameter(
             displayName="Selected Feature Attributes",
             name="selected_feature_attributes",
             datatype="DETable",
             parameterType="Required",
             direction="Output",
         )
-        parameters[3].description = (
+        parameters[5].description = (
             "A new table containing attributes for the input features within the "
             "specified distance. Geometries are not included."
         )
-        parameters[4].description = (
+        parameters[6].description = (
             "The exact number of input features within the specified distance. "
             "This result is returned before the attribute table."
         )
@@ -350,22 +348,24 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
 
     def execute(self, parameters, messages):
         in_features = parameters[0].valueAsText
-        proximity_features = parameters[1].valueAsText
-        search_distance = parameters[2].valueAsText
-        output_table = parameters[3].valueAsText
+        input_where_clause = self._optional_where_clause(parameters[1])
+        proximity_features = parameters[2].valueAsText
+        proximity_where_clause = self._optional_where_clause(parameters[3])
+        search_distance = parameters[4].valueAsText
+        output_table = parameters[5].valueAsText
         input_layer_name = "proximity_candidates_{}".format(uuid.uuid4().hex)
         proximity_layer_name = "proximity_features_{}".format(uuid.uuid4().hex)
         temporary_feature_classes = []
 
         try:
             input_feature_class = self._make_input_layer(
-                in_features, None, input_layer_name
+                in_features, input_where_clause, input_layer_name
             )
             if input_feature_class:
                 temporary_feature_classes.append(input_feature_class)
 
             proximity_feature_class = self._make_input_layer(
-                proximity_features, None, proximity_layer_name
+                proximity_features, proximity_where_clause, proximity_layer_name
             )
             if proximity_feature_class:
                 temporary_feature_classes.append(proximity_feature_class)
@@ -378,7 +378,7 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
                 "NEW_SELECTION",
             )
             selected_count = int(arcpy.management.GetCount(input_layer_name)[0])
-            parameters[4].value = selected_count
+            parameters[6].value = selected_count
             arcpy.conversion.TableToTable(input_layer_name, os.path.dirname(output_table), os.path.basename(output_table))
             arcpy.AddMessage(
                 "Found {} feature(s) within {} of the proximity features.".format(
