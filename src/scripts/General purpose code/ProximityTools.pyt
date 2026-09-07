@@ -20,8 +20,10 @@ class FindFeaturesNearFeatures(object):
     def __init__(self):
         self.label = "Find Features Near Features"
         self.description = (
-            "Returns input features within a specified geodesic distance of "
-            "reference features. Before supplying either optional SQL filter, "
+            "Returns geometry for input features within a specified geodesic "
+            "distance of reference features. Use Find Features Near Features "
+            "Summary for count or attribute questions; this tool's geometry output "
+            "can be too large for Copilot Studio. Before supplying either optional SQL filter, "
             "inspect that layer's schema and use its physical field names and "
             "verified values, not display aliases. Use the SQL dialect accepted "
             "by the referenced feature service."
@@ -378,28 +380,36 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
     def __init__(self):
         self.label = "Find Features Near Features Summary"
         self.description = (
-            "Returns the number of input features within a specified geodesic "
-            "distance of reference features and a geometry-free table of their "
-            "attributes. Use this task for count questions and lightweight "
-            "Copilot Studio responses."
+            "Use this task for all count or attribute questions. It returns the "
+            "exact number of input features within a specified geodesic distance "
+            "of reference features before an optional geometry-free attribute table. "
+            "Use Find Features Near Features only when feature geometry is needed."
         )
 
     def getParameterInfo(self):
         parameters = super().getParameterInfo()
         parameters[5] = arcpy.Parameter(
+            displayName="Selected Feature Count",
+            name="selected_feature_count",
+            datatype="GPLong",
+            parameterType="Derived",
+            direction="Output",
+        )
+        parameters[5].description = (
+            "The exact number of input features within the specified distance. "
+            "Use this result to answer count questions."
+        )
+        parameters[6] = arcpy.Parameter(
             displayName="Selected Feature Attributes",
             name="selected_feature_attributes",
             datatype="DETable",
             parameterType="Required",
             direction="Output",
         )
-        parameters[5].description = (
-            "A new table containing attributes for the input features within the "
-            "specified distance. Geometries are not included."
-        )
         parameters[6].description = (
-            "The exact number of input features within the specified distance. "
-            "This result is returned before the attribute table."
+            "A new table containing attributes for the input features within the "
+            "specified distance. Geometries are not included; use only when "
+            "attribute records are needed."
         )
         return parameters
 
@@ -409,7 +419,7 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
         proximity_features = self._source_value(parameters[2])
         proximity_where_clause = self._optional_where_clause(parameters[3])
         search_distance = parameters[4].valueAsText
-        output_table = parameters[5].valueAsText
+        output_table = parameters[6].valueAsText
         input_layer_name = "proximity_candidates_{}".format(uuid.uuid4().hex)
         proximity_layer_name = "proximity_features_{}".format(uuid.uuid4().hex)
         temporary_feature_classes = []
@@ -451,7 +461,7 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
                 "NEW_SELECTION",
             )
             selected_count = int(arcpy.management.GetCount(input_layer_name)[0])
-            parameters[6].value = selected_count
+            parameters[5].value = selected_count
             arcpy.conversion.TableToTable(input_layer_name, os.path.dirname(output_table), os.path.basename(output_table))
             arcpy.AddMessage(
                 "Found {} feature(s) within {} of the proximity features.".format(

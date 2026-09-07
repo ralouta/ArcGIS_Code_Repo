@@ -17,7 +17,8 @@
     <idPurp>Schema-aware geoprocessing tasks for identifying features near user-supplied reference features.</idPurp>
     <idAbs><![CDATA[
 <h2>Find Features Near Features</h2>
-<p>A synchronous geoprocessing tool that returns input features within a specified geodesic distance of reference features.</p>
+<p>A synchronous geoprocessing tool that returns geometry for input features within a specified geodesic distance of reference features.</p>
+<p>For any count or attribute question, use <strong>Find Features Near Features Summary</strong>. It returns <code>selected_feature_count</code> first and avoids geometry-heavy responses that can exceed Copilot Studio limits.</p>
 <h3>How It Works</h3>
 <p>The tool optionally filters the input and reference layers, then selects input features within the supplied distance of the reference features. For count questions, use the <code>selected_feature_count</code> result. Do not count the returned feature geometry.</p>
 <h3>Parameters</h3>
