@@ -133,6 +133,8 @@ class FindFeaturesNearFeatures(object):
 
     @staticmethod
     def _optional_where_clause(parameter):
+        if not parameter.altered:
+            return None
         value = parameter.valueAsText
         if value is None:
             return None
