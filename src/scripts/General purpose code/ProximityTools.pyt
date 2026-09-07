@@ -5,7 +5,7 @@ import tempfile
 import uuid
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 class Toolbox(object):
@@ -31,7 +31,7 @@ class FindFeaturesNearFeatures(object):
         input_features = arcpy.Parameter(
             displayName="Input Features",
             name="in_features",
-            datatype="GPFeatureLayer",
+            datatype="GPString",
             parameterType="Required",
             direction="Input",
         )
@@ -59,7 +59,7 @@ class FindFeaturesNearFeatures(object):
         proximity_features = arcpy.Parameter(
             displayName="Proximity Features",
             name="proximity_features",
-            datatype="GPFeatureLayer",
+            datatype="GPString",
             parameterType="Required",
             direction="Input",
         )
@@ -144,6 +144,19 @@ class FindFeaturesNearFeatures(object):
         return value
 
     @staticmethod
+    def _source_value(parameter):
+        value = parameter.valueAsText
+        if value is None:
+            return None
+        try:
+            source = json.loads(value)
+        except (TypeError, ValueError):
+            return value
+        if isinstance(source, dict) and isinstance(source.get("url"), str):
+            return source["url"]
+        return value
+
+    @staticmethod
     def _is_feature_service_url(value):
         parsed_url = urlparse(value)
         return (
@@ -163,12 +176,17 @@ class FindFeaturesNearFeatures(object):
                 parsed_url.netloc,
                 parsed_url.path.rstrip("/") + "/query",
                 "",
-                urlencode(query_parameters),
+                "",
                 "",
             )
         )
         try:
-            with urlopen(request_url) as response:
+            request = Request(
+                request_url,
+                data=urlencode(query_parameters).encode("utf-8"),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            with urlopen(request) as response:
                 result = json.load(response)
         except HTTPError as error:
             raise RuntimeError(
@@ -261,9 +279,9 @@ class FindFeaturesNearFeatures(object):
         return None
 
     def execute(self, parameters, messages):
-        in_features = parameters[0].valueAsText
+        in_features = self._source_value(parameters[0])
         input_where_clause = self._optional_where_clause(parameters[1])
-        proximity_features = parameters[2].valueAsText
+        proximity_features = self._source_value(parameters[2])
         proximity_where_clause = self._optional_where_clause(parameters[3])
         search_distance = parameters[4].valueAsText
         out_features = parameters[5].valueAsText
@@ -347,9 +365,9 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
         return parameters
 
     def execute(self, parameters, messages):
-        in_features = parameters[0].valueAsText
+        in_features = self._source_value(parameters[0])
         input_where_clause = self._optional_where_clause(parameters[1])
-        proximity_features = parameters[2].valueAsText
+        proximity_features = self._source_value(parameters[2])
         proximity_where_clause = self._optional_where_clause(parameters[3])
         search_distance = parameters[4].valueAsText
         output_table = parameters[5].valueAsText
