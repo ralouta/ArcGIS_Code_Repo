@@ -4,6 +4,7 @@ import os
 import tempfile
 import uuid
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 
@@ -146,6 +147,7 @@ class FindFeaturesNearFeatures(object):
         return (
             parsed_url.scheme in ("http", "https")
             and "/featureserver/" in parsed_url.path.lower()
+            and parsed_url.path.rstrip("/").rsplit("/", 1)[-1].isdigit()
         )
 
     @staticmethod
@@ -163,8 +165,15 @@ class FindFeaturesNearFeatures(object):
                 "",
             )
         )
-        with urlopen(request_url) as response:
-            result = json.load(response)
+        try:
+            with urlopen(request_url) as response:
+                result = json.load(response)
+        except HTTPError as error:
+            raise RuntimeError(
+                "Feature service query failed with HTTP {}: {}".format(
+                    error.code, request_url
+                )
+            )
         if "error" in result:
             raise RuntimeError(result["error"].get("message", "Feature service query failed."))
         return result
@@ -232,6 +241,16 @@ class FindFeaturesNearFeatures(object):
             )
             arcpy.management.MakeFeatureLayer(feature_class, layer_name)
             return feature_class
+
+        parsed_url = urlparse(source)
+        if (
+            parsed_url.scheme in ("http", "https")
+            and "/featureserver" in parsed_url.path.lower()
+        ):
+            raise ValueError(
+                "Feature service URLs must identify a numeric layer, for example "
+                "https://.../FeatureServer/0. Received: {}".format(source)
+            )
 
         layer_args = [source, layer_name]
         if where_clause:
