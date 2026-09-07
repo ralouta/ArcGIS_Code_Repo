@@ -254,6 +254,45 @@ class FindFeaturesNearFeatures(object):
         return output_feature_class
 
     @classmethod
+    def _where_clause_is_valid(cls, source, where_clause):
+        if not where_clause or not cls._is_feature_service_url(source):
+            return True
+        try:
+            cls._feature_service_request(
+                source,
+                {
+                    "f": "json",
+                    "where": where_clause,
+                    "returnCountOnly": "true",
+                },
+            )
+            return True
+        except RuntimeError:
+            return False
+
+    @classmethod
+    def _route_where_clauses(
+        cls, in_features, input_where_clause, proximity_features, proximity_where_clause
+    ):
+        if (
+            input_where_clause
+            and not proximity_where_clause
+            and not cls._where_clause_is_valid(in_features, input_where_clause)
+            and cls._where_clause_is_valid(proximity_features, input_where_clause)
+        ):
+            return None, input_where_clause
+        if (
+            proximity_where_clause
+            and not input_where_clause
+            and not cls._where_clause_is_valid(
+                proximity_features, proximity_where_clause
+            )
+            and cls._where_clause_is_valid(in_features, proximity_where_clause)
+        ):
+            return proximity_where_clause, None
+        return input_where_clause, proximity_where_clause
+
+    @classmethod
     def _make_input_layer(cls, source, where_clause, layer_name):
         if cls._is_feature_service_url(source):
             feature_class = cls._feature_service_to_feature_class(
@@ -376,6 +415,22 @@ class FindFeaturesNearFeaturesSummary(FindFeaturesNearFeatures):
         temporary_feature_classes = []
 
         try:
+            input_where_clause, proximity_where_clause = self._route_where_clauses(
+                in_features,
+                input_where_clause,
+                proximity_features,
+                proximity_where_clause,
+            )
+            arcpy.AddMessage(
+                "Input features where clause: {}".format(
+                    input_where_clause or "<none>"
+                )
+            )
+            arcpy.AddMessage(
+                "Proximity features where clause: {}".format(
+                    proximity_where_clause or "<none>"
+                )
+            )
             input_feature_class = self._make_input_layer(
                 in_features, input_where_clause, input_layer_name
             )
