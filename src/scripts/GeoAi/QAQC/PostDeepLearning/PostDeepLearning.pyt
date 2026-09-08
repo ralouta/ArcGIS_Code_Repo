@@ -1,4 +1,6 @@
 import arcpy
+import os
+import uuid
 from arcpy.sa import *
 
 class Toolbox(object):
@@ -9,7 +11,7 @@ class Toolbox(object):
         self.alias = "Toolbox for post-processing deep learning results"
 
         # List of tool classes associated with this toolbox
-        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows, PostDeepLearningTreeWorkflows, PostDeepLearningAgricultureFieldsWorkflows]
+        self.tools = [PostDeepLearningBuildingsWorkflows, PostDeepLearningRoadsWorkflows, PostDeepLearningTreeWorkflows, PostDeepLearningAgricultureFieldsWorkflows, PostDeepLearningShipDetectionQAQC]
 
 def raster_to_polygon(input_raster, field_name, unique_value, messages):
     messages.addMessage("Starting raster to polygon conversion...")
@@ -799,3 +801,90 @@ class PostDeepLearningAgricultureFieldsWorkflows(object):
         messages.addMessage("Post-processing workflow for agriculture fields completed successfully.")
 
         return
+
+
+class PostDeepLearningShipDetectionQAQC(object):
+    def __init__(self):
+        self.label = "Clean Ship Detections by Aspect Ratio"
+        self.description = (
+            "Removes ship-detection polygons whose oriented length-to-width ratio "
+            "exceeds a specified threshold."
+        )
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        input_features = arcpy.Parameter(
+            displayName="Input Ship Detection Polygons",
+            name="in_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input"
+        )
+        output_features = arcpy.Parameter(
+            displayName="Output Feature Class",
+            name="out_features",
+            datatype="DEFeatureClass",
+            parameterType="Required",
+            direction="Output"
+        )
+        max_aspect_ratio = arcpy.Parameter(
+            displayName="Maximum Length-to-Width Ratio",
+            name="max_aspect_ratio",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        max_aspect_ratio.value = 30.0
+
+        return [input_features, output_features, max_aspect_ratio]
+
+    def execute(self, parameters, messages):
+        input_features = parameters[0].valueAsText
+        output_features = parameters[1].valueAsText
+        max_aspect_ratio = float(parameters[2].value)
+        if max_aspect_ratio <= 1:
+            raise ValueError("Maximum Length-to-Width Ratio must be greater than 1.")
+
+        arcpy.management.CopyFeatures(input_features, output_features)
+        output_oid_field = arcpy.Describe(output_features).OIDFieldName
+        minimum_bounding_rectangles = os.path.join(
+            arcpy.env.scratchGDB,
+            "ship_detection_mbr_{}".format(uuid.uuid4().hex)
+        )
+
+        try:
+            arcpy.management.MinimumBoundingGeometry(
+                output_features,
+                minimum_bounding_rectangles,
+                "RECTANGLE_BY_WIDTH",
+                "NONE",
+                "",
+                "MBG_FIELDS"
+            )
+
+            invalid_feature_ids = set()
+            with arcpy.da.SearchCursor(
+                minimum_bounding_rectangles,
+                ["ORIG_FID", "MBG_Width", "MBG_Length"]
+            ) as cursor:
+                for original_id, width, length in cursor:
+                    if not width or not length:
+                        invalid_feature_ids.add(original_id)
+                    elif max(width, length) / min(width, length) > max_aspect_ratio:
+                        invalid_feature_ids.add(original_id)
+
+            with arcpy.da.UpdateCursor(output_features, [output_oid_field]) as cursor:
+                for row in cursor:
+                    if row[0] in invalid_feature_ids:
+                        cursor.deleteRow()
+
+            kept_count = int(arcpy.management.GetCount(output_features)[0])
+            messages.addMessage(
+                "Removed {} polygon(s) with a length-to-width ratio above {}. "
+                "Kept {} polygon(s).".format(
+                    len(invalid_feature_ids), max_aspect_ratio, kept_count
+                )
+            )
+        finally:
+            if arcpy.Exists(minimum_bounding_rectangles):
+                arcpy.management.Delete(minimum_bounding_rectangles)
