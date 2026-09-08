@@ -807,8 +807,9 @@ class PostDeepLearningShipDetectionQAQC(object):
     def __init__(self):
         self.label = "Clean Ship Detections by Aspect Ratio"
         self.description = (
-            "Removes ship-detection polygons whose oriented length-to-width ratio "
-            "exceeds a specified threshold."
+            "Removes ship-detection polygons outside plausible oriented ship length, "
+            "beam, or length-to-beam limits. Input polygons must use a projected "
+            "coordinate system."
         )
         self.canRunInBackground = False
 
@@ -827,6 +828,51 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Required",
             direction="Output"
         )
+        min_ship_length = arcpy.Parameter(
+            displayName="Minimum Ship Length (Meters)",
+            name="min_ship_length",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        min_ship_length.value = 10.0
+
+        max_ship_length = arcpy.Parameter(
+            displayName="Maximum Ship Length (Meters)",
+            name="max_ship_length",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        max_ship_length.value = 460.0
+
+        min_ship_width = arcpy.Parameter(
+            displayName="Minimum Ship Width (Meters)",
+            name="min_ship_width",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        min_ship_width.value = 2.0
+
+        max_ship_width = arcpy.Parameter(
+            displayName="Maximum Ship Width (Meters)",
+            name="max_ship_width",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        max_ship_width.value = 70.0
+
+        min_aspect_ratio = arcpy.Parameter(
+            displayName="Minimum Length-to-Width Ratio",
+            name="min_aspect_ratio",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        min_aspect_ratio.value = 1.5
+
         max_aspect_ratio = arcpy.Parameter(
             displayName="Maximum Length-to-Width Ratio",
             name="max_aspect_ratio",
@@ -834,7 +880,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        max_aspect_ratio.value = 30.0
+        max_aspect_ratio.value = 15.0
 
         area_of_interest = arcpy.Parameter(
             displayName="Area of Interest",
@@ -860,22 +906,44 @@ class PostDeepLearningShipDetectionQAQC(object):
         return [
             input_features,
             output_features,
+            min_ship_length,
+            max_ship_length,
+            min_ship_width,
+            max_ship_width,
+            min_aspect_ratio,
             max_aspect_ratio,
             area_of_interest,
             aoi_operation,
         ]
 
     def updateParameters(self, parameters):
-        parameters[4].enabled = bool(parameters[3].valueAsText)
+        parameters[9].enabled = bool(parameters[8].valueAsText)
 
     def execute(self, parameters, messages):
         input_features = parameters[0].valueAsText
         output_features = parameters[1].valueAsText
-        max_aspect_ratio = float(parameters[2].value)
-        area_of_interest = parameters[3].valueAsText
-        aoi_operation = parameters[4].valueAsText
-        if max_aspect_ratio <= 1:
-            raise ValueError("Maximum Length-to-Width Ratio must be greater than 1.")
+        min_ship_length = float(parameters[2].value)
+        max_ship_length = float(parameters[3].value)
+        min_ship_width = float(parameters[4].value)
+        max_ship_width = float(parameters[5].value)
+        min_aspect_ratio = float(parameters[6].value)
+        max_aspect_ratio = float(parameters[7].value)
+        area_of_interest = parameters[8].valueAsText
+        aoi_operation = parameters[9].valueAsText
+        if (
+            min_ship_length <= 0
+            or min_ship_width <= 0
+            or min_aspect_ratio <= 0
+            or min_ship_length >= max_ship_length
+            or min_ship_width >= max_ship_width
+            or min_aspect_ratio >= max_aspect_ratio
+        ):
+            raise ValueError("Ship size and aspect ratio minimums must be positive and below their maximums.")
+
+        spatial_reference = arcpy.Describe(input_features).spatialReference
+        if spatial_reference.type != "Projected":
+            raise ValueError("Input Ship Detection Polygons must use a projected coordinate system.")
+        meters_per_unit = float(spatial_reference.metersPerUnit)
 
         cleaned_features = os.path.join(
             arcpy.env.scratchGDB,
@@ -906,7 +974,18 @@ class PostDeepLearningShipDetectionQAQC(object):
                 for original_id, width, length in cursor:
                     if not width or not length:
                         invalid_feature_ids.add(original_id)
-                    elif max(width, length) / min(width, length) > max_aspect_ratio:
+                        continue
+                    ship_length = max(width, length) * meters_per_unit
+                    ship_width = min(width, length) * meters_per_unit
+                    aspect_ratio = ship_length / ship_width
+                    if (
+                        ship_length < min_ship_length
+                        or ship_length > max_ship_length
+                        or ship_width < min_ship_width
+                        or ship_width > max_ship_width
+                        or aspect_ratio < min_aspect_ratio
+                        or aspect_ratio > max_aspect_ratio
+                    ):
                         invalid_feature_ids.add(original_id)
 
             with arcpy.da.UpdateCursor(cleaned_features, [output_oid_field]) as cursor:
@@ -931,9 +1010,10 @@ class PostDeepLearningShipDetectionQAQC(object):
 
             kept_count = int(arcpy.management.GetCount(output_features)[0])
             messages.addMessage(
-                "Removed {} polygon(s) with a length-to-width ratio above {}. "
+                "Removed {} polygon(s) outside the configured ship size and "
+                "length-to-width limits. "
                 "Kept {} polygon(s).".format(
-                    len(invalid_feature_ids), max_aspect_ratio, kept_count
+                    len(invalid_feature_ids), kept_count
                 )
             )
         finally:
