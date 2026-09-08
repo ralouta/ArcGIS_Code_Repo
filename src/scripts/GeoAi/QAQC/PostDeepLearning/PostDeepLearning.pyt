@@ -836,17 +836,53 @@ class PostDeepLearningShipDetectionQAQC(object):
         )
         max_aspect_ratio.value = 30.0
 
-        return [input_features, output_features, max_aspect_ratio]
+        area_of_interest = arcpy.Parameter(
+            displayName="Area of Interest",
+            name="area_of_interest",
+            datatype="GPFeatureLayer",
+            parameterType="Optional",
+            direction="Input"
+        )
+        area_of_interest.filter.list = ["Polygon"]
+
+        aoi_operation = arcpy.Parameter(
+            displayName="Area of Interest Operation",
+            name="aoi_operation",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input"
+        )
+        aoi_operation.filter.type = "ValueList"
+        aoi_operation.filter.list = ["Clip", "Erase"]
+        aoi_operation.value = "Clip"
+        aoi_operation.enabled = False
+
+        return [
+            input_features,
+            output_features,
+            max_aspect_ratio,
+            area_of_interest,
+            aoi_operation,
+        ]
+
+    def updateParameters(self, parameters):
+        parameters[4].enabled = bool(parameters[3].valueAsText)
 
     def execute(self, parameters, messages):
         input_features = parameters[0].valueAsText
         output_features = parameters[1].valueAsText
         max_aspect_ratio = float(parameters[2].value)
+        area_of_interest = parameters[3].valueAsText
+        aoi_operation = parameters[4].valueAsText
         if max_aspect_ratio <= 1:
             raise ValueError("Maximum Length-to-Width Ratio must be greater than 1.")
 
-        arcpy.management.CopyFeatures(input_features, output_features)
-        output_oid_field = arcpy.Describe(output_features).OIDFieldName
+        cleaned_features = os.path.join(
+            arcpy.env.scratchGDB,
+            "cleaned_ship_detections_{}".format(uuid.uuid4().hex)
+        )
+        arcpy.management.CopyFeatures(input_features, cleaned_features)
+        output_oid_field = arcpy.Describe(cleaned_features).OIDFieldName
         minimum_bounding_rectangles = os.path.join(
             arcpy.env.scratchGDB,
             "ship_detection_mbr_{}".format(uuid.uuid4().hex)
@@ -854,7 +890,7 @@ class PostDeepLearningShipDetectionQAQC(object):
 
         try:
             arcpy.management.MinimumBoundingGeometry(
-                output_features,
+                cleaned_features,
                 minimum_bounding_rectangles,
                 "RECTANGLE_BY_WIDTH",
                 "NONE",
@@ -873,10 +909,25 @@ class PostDeepLearningShipDetectionQAQC(object):
                     elif max(width, length) / min(width, length) > max_aspect_ratio:
                         invalid_feature_ids.add(original_id)
 
-            with arcpy.da.UpdateCursor(output_features, [output_oid_field]) as cursor:
+            with arcpy.da.UpdateCursor(cleaned_features, [output_oid_field]) as cursor:
                 for row in cursor:
                     if row[0] in invalid_feature_ids:
                         cursor.deleteRow()
+
+            if area_of_interest:
+                if aoi_operation == "Erase":
+                    arcpy.analysis.PairwiseErase(
+                        cleaned_features, area_of_interest, output_features
+                    )
+                else:
+                    arcpy.analysis.PairwiseClip(
+                        cleaned_features, area_of_interest, output_features
+                    )
+                messages.addMessage(
+                    "Applied {} using the Area of Interest.".format(aoi_operation)
+                )
+            else:
+                arcpy.management.CopyFeatures(cleaned_features, output_features)
 
             kept_count = int(arcpy.management.GetCount(output_features)[0])
             messages.addMessage(
@@ -888,3 +939,5 @@ class PostDeepLearningShipDetectionQAQC(object):
         finally:
             if arcpy.Exists(minimum_bounding_rectangles):
                 arcpy.management.Delete(minimum_bounding_rectangles)
+            if arcpy.Exists(cleaned_features):
+                arcpy.management.Delete(cleaned_features)
