@@ -835,7 +835,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        min_ship_length.value = 10.0
+        min_ship_length.value = 3.0
 
         max_ship_length = arcpy.Parameter(
             displayName="Maximum Ship Length (Meters)",
@@ -853,7 +853,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        min_ship_width.value = 2.0
+        min_ship_width.value = 1.0
 
         max_ship_width = arcpy.Parameter(
             displayName="Maximum Ship Width (Meters)",
@@ -862,7 +862,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        max_ship_width.value = 70.0
+        max_ship_width.value = 80.0
 
         min_aspect_ratio = arcpy.Parameter(
             displayName="Minimum Length-to-Width Ratio",
@@ -871,7 +871,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        min_aspect_ratio.value = 1.5
+        min_aspect_ratio.value = 1.1
 
         max_aspect_ratio = arcpy.Parameter(
             displayName="Maximum Length-to-Width Ratio",
@@ -880,7 +880,7 @@ class PostDeepLearningShipDetectionQAQC(object):
             parameterType="Optional",
             direction="Input"
         )
-        max_aspect_ratio.value = 15.0
+        max_aspect_ratio.value = 30.0
 
         area_of_interest = arcpy.Parameter(
             displayName="Area of Interest",
