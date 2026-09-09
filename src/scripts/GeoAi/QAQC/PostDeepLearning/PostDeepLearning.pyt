@@ -808,8 +808,8 @@ class PostDeepLearningShipDetectionQAQC(object):
         self.label = "Remove Implausibly Long Ship Detections"
         self.description = (
             "Removes ship-detection polygons whose oriented length exceeds a "
-            "specified maximum. Input polygons must use a projected coordinate "
-            "system."
+            "specified maximum or that occur too close to another detection. "
+            "Input polygons must use a projected coordinate system."
         )
         self.canRunInBackground = False
 
@@ -858,12 +858,22 @@ class PostDeepLearningShipDetectionQAQC(object):
         aoi_operation.value = "Clip"
         aoi_operation.enabled = False
 
+        minimum_separation = arcpy.Parameter(
+            displayName="Minimum Separation Between Detections (Meters, 0 to Disable)",
+            name="minimum_separation",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        minimum_separation.value = 0.0
+
         return [
             input_features,
             output_features,
             max_ship_length,
             area_of_interest,
             aoi_operation,
+            minimum_separation,
         ]
 
     def updateParameters(self, parameters):
@@ -875,8 +885,11 @@ class PostDeepLearningShipDetectionQAQC(object):
         max_ship_length = float(parameters[2].value)
         area_of_interest = parameters[3].valueAsText
         aoi_operation = parameters[4].valueAsText
+        minimum_separation = float(parameters[5].value)
         if max_ship_length <= 0:
             raise ValueError("Maximum Ship Length must be greater than 0.")
+        if minimum_separation < 0:
+            raise ValueError("Minimum Separation must be 0 or greater.")
 
         spatial_reference = arcpy.Describe(input_features).spatialReference
         if spatial_reference.type != "Projected":
@@ -931,6 +944,51 @@ class PostDeepLearningShipDetectionQAQC(object):
                 )
             )
 
+            if minimum_separation > 0 and filtered_count > 1:
+                near_table = os.path.join(
+                    arcpy.env.scratchGDB,
+                    "ship_detection_near_{}".format(uuid.uuid4().hex)
+                )
+                try:
+                    arcpy.analysis.GenerateNearTable(
+                        in_features=cleaned_features,
+                        near_features=cleaned_features,
+                        out_table=near_table,
+                        search_radius="{} Meters".format(minimum_separation),
+                        location="NO_LOCATION",
+                        angle="NO_ANGLE",
+                        closest="ALL",
+                        method="PLANAR"
+                    )
+                    clustered_feature_ids = set()
+                    with arcpy.da.SearchCursor(
+                        near_table, ["IN_FID", "NEAR_FID"]
+                    ) as cursor:
+                        for input_id, near_id in cursor:
+                            if input_id != near_id:
+                                clustered_feature_ids.add(input_id)
+                                clustered_feature_ids.add(near_id)
+
+                    with arcpy.da.UpdateCursor(
+                        cleaned_features, [output_oid_field]
+                    ) as cursor:
+                        for row in cursor:
+                            if row[0] in clustered_feature_ids:
+                                cursor.deleteRow()
+
+                    messages.addMessage(
+                        "Removed {} detection(s) within {} meters of another "
+                        "detection. {} detection(s) remain before the Area of "
+                        "Interest operation.".format(
+                            len(clustered_feature_ids),
+                            minimum_separation,
+                            int(arcpy.management.GetCount(cleaned_features)[0])
+                        )
+                    )
+                finally:
+                    if arcpy.Exists(near_table):
+                        arcpy.management.Delete(near_table)
+
             if area_of_interest:
                 if aoi_operation == "Erase":
                     arcpy.analysis.PairwiseErase(
@@ -954,8 +1012,7 @@ class PostDeepLearningShipDetectionQAQC(object):
                     "Clip or Erase is the intended operation."
                 )
             messages.addMessage(
-                "Removed {} polygon(s) outside the configured ship size and "
-                "maximum length. "
+                "Removed {} polygon(s) longer than the configured maximum length. "
                 "Kept {} polygon(s).".format(
                     len(invalid_feature_ids), kept_count
                 )
