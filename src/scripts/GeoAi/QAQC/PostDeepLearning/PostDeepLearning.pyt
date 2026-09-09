@@ -888,6 +888,8 @@ class PostDeepLearningShipDetectionQAQC(object):
             "cleaned_ship_detections_{}".format(uuid.uuid4().hex)
         )
         arcpy.management.CopyFeatures(input_features, cleaned_features)
+        input_count = int(arcpy.management.GetCount(cleaned_features)[0])
+        messages.addMessage("Input ship detections: {}.".format(input_count))
         output_oid_field = arcpy.Describe(cleaned_features).OIDFieldName
         minimum_bounding_rectangles = os.path.join(
             arcpy.env.scratchGDB,
@@ -921,6 +923,14 @@ class PostDeepLearningShipDetectionQAQC(object):
                     if row[0] in invalid_feature_ids:
                         cursor.deleteRow()
 
+            filtered_count = int(arcpy.management.GetCount(cleaned_features)[0])
+            messages.addMessage(
+                "Removed {} detection(s) longer than {} meters. {} detection(s) "
+                "remain before the Area of Interest operation.".format(
+                    len(invalid_feature_ids), max_ship_length, filtered_count
+                )
+            )
+
             if area_of_interest:
                 if aoi_operation == "Erase":
                     arcpy.analysis.PairwiseErase(
@@ -937,6 +947,12 @@ class PostDeepLearningShipDetectionQAQC(object):
                 arcpy.management.CopyFeatures(cleaned_features, output_features)
 
             kept_count = int(arcpy.management.GetCount(output_features)[0])
+            if area_of_interest and kept_count == 0:
+                messages.addWarningMessage(
+                    "The Area of Interest operation produced no features. Verify "
+                    "that the AOI overlaps the retained ship detections and that "
+                    "Clip or Erase is the intended operation."
+                )
             messages.addMessage(
                 "Removed {} polygon(s) outside the configured ship size and "
                 "maximum length. "
