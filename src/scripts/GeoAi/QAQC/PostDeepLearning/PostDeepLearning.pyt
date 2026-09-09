@@ -960,14 +960,47 @@ class PostDeepLearningShipDetectionQAQC(object):
                         closest="ALL",
                         method="PLANAR"
                     )
-                    clustered_feature_ids = set()
+                    nearby_feature_ids = {}
                     with arcpy.da.SearchCursor(
                         near_table, ["IN_FID", "NEAR_FID"]
                     ) as cursor:
                         for input_id, near_id in cursor:
                             if input_id != near_id:
-                                clustered_feature_ids.add(input_id)
-                                clustered_feature_ids.add(near_id)
+                                nearby_feature_ids.setdefault(input_id, set()).add(near_id)
+                                nearby_feature_ids.setdefault(near_id, set()).add(input_id)
+
+                    feature_areas = {}
+                    with arcpy.da.SearchCursor(
+                        cleaned_features, [output_oid_field, "SHAPE@AREA"]
+                    ) as cursor:
+                        for feature_id, feature_area in cursor:
+                            feature_areas[feature_id] = feature_area
+
+                    clustered_feature_ids = set()
+                    retained_cluster_ids = set()
+                    while nearby_feature_ids:
+                        cluster = set()
+                        pending_ids = [next(iter(nearby_feature_ids))]
+                        while pending_ids:
+                            feature_id = pending_ids.pop()
+                            if feature_id in cluster:
+                                continue
+                            cluster.add(feature_id)
+                            pending_ids.extend(nearby_feature_ids.get(feature_id, []))
+
+                        retained_id = max(
+                            cluster,
+                            key=lambda feature_id: (
+                                len(cluster.intersection(
+                                    nearby_feature_ids.get(feature_id, set())
+                                )),
+                                feature_areas.get(feature_id, 0)
+                            )
+                        )
+                        for feature_id in cluster:
+                            nearby_feature_ids.pop(feature_id, None)
+                        retained_cluster_ids.add(retained_id)
+                        clustered_feature_ids.update(cluster - {retained_id})
 
                     with arcpy.da.UpdateCursor(
                         cleaned_features, [output_oid_field]
@@ -978,10 +1011,12 @@ class PostDeepLearningShipDetectionQAQC(object):
 
                     messages.addMessage(
                         "Removed {} detection(s) within {} meters of another "
-                        "detection. {} detection(s) remain before the Area of "
-                        "Interest operation.".format(
+                        "detection while retaining one central detection from each "
+                        "of {} cluster(s). {} detection(s) remain before the Area "
+                        "of Interest operation.".format(
                             len(clustered_feature_ids),
                             minimum_separation,
+                            len(retained_cluster_ids),
                             int(arcpy.management.GetCount(cleaned_features)[0])
                         )
                     )
