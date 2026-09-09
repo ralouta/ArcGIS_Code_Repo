@@ -867,6 +867,16 @@ class PostDeepLearningShipDetectionQAQC(object):
         )
         minimum_separation.value = 0.0
 
+        aoi_exclusion_buffer = arcpy.Parameter(
+            displayName="AOI Exclusion Buffer for Erase (Meters, 0 to Disable)",
+            name="aoi_exclusion_buffer",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        aoi_exclusion_buffer.value = 3000.0
+        aoi_exclusion_buffer.enabled = False
+
         return [
             input_features,
             output_features,
@@ -874,10 +884,15 @@ class PostDeepLearningShipDetectionQAQC(object):
             area_of_interest,
             aoi_operation,
             minimum_separation,
+            aoi_exclusion_buffer,
         ]
 
     def updateParameters(self, parameters):
         parameters[4].enabled = bool(parameters[3].valueAsText)
+        parameters[6].enabled = (
+            bool(parameters[3].valueAsText)
+            and parameters[4].valueAsText == "Erase"
+        )
 
     def execute(self, parameters, messages):
         input_features = parameters[0].valueAsText
@@ -886,10 +901,13 @@ class PostDeepLearningShipDetectionQAQC(object):
         area_of_interest = parameters[3].valueAsText
         aoi_operation = parameters[4].valueAsText
         minimum_separation = float(parameters[5].value)
+        aoi_exclusion_buffer = float(parameters[6].value)
         if max_ship_length <= 0:
             raise ValueError("Maximum Ship Length must be greater than 0.")
         if minimum_separation < 0:
             raise ValueError("Minimum Separation must be 0 or greater.")
+        if aoi_exclusion_buffer < 0:
+            raise ValueError("AOI Exclusion Buffer must be 0 or greater.")
 
         spatial_reference = arcpy.Describe(input_features).spatialReference
         if spatial_reference.type != "Projected":
@@ -1026,9 +1044,27 @@ class PostDeepLearningShipDetectionQAQC(object):
 
             if area_of_interest:
                 if aoi_operation == "Erase":
+                    erase_features = area_of_interest
+                    if aoi_exclusion_buffer > 0:
+                        erase_features = os.path.join(
+                            arcpy.env.scratchGDB,
+                            "ship_detection_aoi_buffer_{}".format(uuid.uuid4().hex)
+                        )
+                        arcpy.analysis.PairwiseBuffer(
+                            area_of_interest,
+                            erase_features,
+                            "{} Meters".format(aoi_exclusion_buffer)
+                        )
+                        messages.addMessage(
+                            "Expanded the Erase Area of Interest by {} meters.".format(
+                                aoi_exclusion_buffer
+                            )
+                        )
                     arcpy.analysis.PairwiseErase(
-                        cleaned_features, area_of_interest, output_features
+                        cleaned_features, erase_features, output_features
                     )
+                    if erase_features != area_of_interest:
+                        arcpy.management.Delete(erase_features)
                 else:
                     arcpy.analysis.PairwiseClip(
                         cleaned_features, area_of_interest, output_features
