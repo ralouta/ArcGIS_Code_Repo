@@ -35,10 +35,13 @@ def clean_road_surfaces(
             "Running road-surface QA: simplifying masks, removing small parts, and "
             "reconstructing polygons from straight-preserving centerlines..."
         )
+        messages.addMessage("Road QA: copying SAM3 polygon masks...")
         arcpy.management.CopyFeatures(input_features, repaired_features)
+        messages.addMessage("Road QA: repairing copied polygon masks...")
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
         if not int(arcpy.management.GetCount(repaired_features)[0]):
             raise arcpy.ExecuteError("Road QA repair produced no valid polygon masks.")
+        messages.addMessage("Road QA: screening masks by minimum geodesic area...")
         rejected_mask_count = filter_by_minimum_geodesic_area(
             repaired_features, screened_features, profile["minimum_area_sqm"], scratch_workspace
         )
