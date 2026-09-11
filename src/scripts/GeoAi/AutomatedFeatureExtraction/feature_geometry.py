@@ -47,6 +47,7 @@ def clean_road_surfaces(
                 f"Rejected {rejected_mask_count:,} road fragment(s) below "
                 f"{profile['minimum_area_sqm']:g} sq m."
             )
+        messages.addMessage("Road QA: simplifying polygon masks...")
         arcpy.cartography.SimplifyPolygon(
             screened_features,
             simplified_features,
@@ -63,17 +64,26 @@ def clean_road_surfaces(
             part_area_percent="0",
             part_option="ANY",
         )
+        messages.addMessage("Road QA: removing remaining undersized polygon parts...")
         filter_by_minimum_geodesic_area(
             cleaned_features,
             polygon_boundary_features,
             profile["road_minimum_part_area_sqm"],
             scratch_workspace,
         )
+        polygon_count = int(arcpy.management.GetCount(polygon_boundary_features)[0])
+        messages.addMessage(
+            f"Road QA: deriving centerlines from {polygon_count:,} cleaned polygon(s)..."
+        )
         arcpy.topographic.PolygonToCenterline(
             polygon_boundary_features, centerline_features
         )
         if not int(arcpy.management.GetCount(centerline_features)[0]):
             raise arcpy.ExecuteError("Road QA could not derive usable centerlines.")
+        centerline_count = int(arcpy.management.GetCount(centerline_features)[0])
+        messages.addMessage(
+            f"Road QA: measuring widths for {centerline_count:,} centerline(s)..."
+        )
         arcpy.management.PolygonToLine(polygon_boundary_features, polygon_boundary_lines)
         arcpy.analysis.Near(
             centerline_features,
@@ -85,6 +95,7 @@ def clean_road_surfaces(
             distance_unit="Meters",
         )
         calculate_road_buffer_widths(centerline_features, profile, spatial_reference)
+        messages.addMessage("Road QA: extending and simplifying centerlines...")
         arcpy.edit.ExtendLine(centerline_features, centerline_extension, "EXTENSION")
         arcpy.cartography.SimplifyLine(
             centerline_features,
@@ -93,12 +104,14 @@ def clean_road_surfaces(
             centerline_simplification,
             error_option="RESOLVE_ERRORS",
         )
+        messages.addMessage("Road QA: reconstructing road polygons from centerlines...")
         arcpy.analysis.PairwiseBuffer(
             simplified_centerline_features,
             buffered_features,
             "AFE_HALF_WIDTH",
             dissolve_option="NONE",
         )
+        messages.addMessage("Road QA: dissolving reconstructed road polygons...")
         arcpy.analysis.PairwiseDissolve(buffered_features, dissolved_output_features)
         arcpy.management.RepairGeometry(dissolved_output_features, "DELETE_NULL", "ESRI")
         filter_by_minimum_geodesic_area(
