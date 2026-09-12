@@ -3,6 +3,9 @@ import arcpy
 from validation_helpers import meters_to_spatial_units, square_meters_to_spatial_units
 
 
+MAX_ROAD_CENTERLINES = 10000
+
+
 def clean_road_surfaces(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
@@ -87,6 +90,14 @@ def clean_road_surfaces(
         messages.addMessage(
             f"Road QA: measuring widths for {centerline_count:,} centerline(s)..."
         )
+        if centerline_count > MAX_ROAD_CENTERLINES:
+            messages.addWarningMessage(
+                f"Road QA derived {centerline_count:,} centerline fragments, exceeding the "
+                f"{MAX_ROAD_CENTERLINES:,} safety limit. Retaining cleaned road masks instead "
+                "of reconstructing from fragmented centerlines."
+            )
+            arcpy.management.CopyFeatures(polygon_boundary_features, output_features)
+            return
         arcpy.management.PolygonToLine(polygon_boundary_features, polygon_boundary_lines)
         arcpy.analysis.Near(
             centerline_features,
