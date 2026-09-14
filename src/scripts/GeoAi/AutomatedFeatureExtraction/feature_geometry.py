@@ -76,7 +76,7 @@ def clean_road_surfaces(
             f"Road QA: collapsing paired boundaries for {component_count:,} observed road component(s)..."
         )
         arcpy.management.PolygonToLine(
-            component_features, boundary_features, "NO_IDENTIFY_NEIGHBORS"
+            component_features, boundary_features, "IGNORE_NEIGHBORS"
         )
         arcpy.cartography.CollapseDualLinesToCenterline(boundary_features, collapsed_features)
         if not int(arcpy.management.GetCount(collapsed_features)[0]):
