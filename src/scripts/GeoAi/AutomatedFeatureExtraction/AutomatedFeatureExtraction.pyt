@@ -693,7 +693,10 @@ def _publish_candidate_features(input_features, output_features, profile, contex
         ) as cursor:
             for row in cursor:
                 geometry = row[0]
-                area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
+                area_sqm = (
+                    geometry.getArea("GEODESIC", "SQUAREMETERS")
+                    if geometry and not is_polyline else 0.0
+                )
                 length_m = geometry.getLength("GEODESIC", "METERS") if geometry else 0.0
                 if not geometry or (length_m <= 0 if is_polyline else area_sqm <= 0):
                     qc_status, qc_reason = "Rejected", "Empty, null, or zero-measure geometry"
