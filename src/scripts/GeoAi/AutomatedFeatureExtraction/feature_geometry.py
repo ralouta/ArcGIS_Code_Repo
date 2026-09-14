@@ -20,6 +20,8 @@ def clean_road_surfaces(
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
     )
+    maximum_width = meters_to_spatial_units(profile["road_maximum_width_m"], spatial_reference)
+    minimum_width = meters_to_spatial_units(profile["road_minimum_width_m"], spatial_reference)
     try:
         messages.addMessage(
             "Running road-centerline QA: simplifying masks, removing small parts, and "
@@ -78,7 +80,9 @@ def clean_road_surfaces(
         arcpy.management.PolygonToLine(
             component_features, boundary_features, "IGNORE_NEIGHBORS"
         )
-        arcpy.cartography.CollapseDualLinesToCenterline(boundary_features, collapsed_features)
+        arcpy.cartography.CollapseDualLinesToCenterline(
+            boundary_features, collapsed_features, maximum_width, minimum_width
+        )
         if not int(arcpy.management.GetCount(collapsed_features)[0]):
             raise arcpy.ExecuteError("Road QA could not derive usable centerlines from road boundaries.")
         messages.addMessage("Road QA: assigning component widths to centerlines...")
