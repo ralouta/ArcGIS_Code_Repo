@@ -1,7 +1,7 @@
 # Topographic Symbology
 
 Add `TopographicSymbology.pyt` to ArcGIS Pro, then run **Create Topographic Layer
-Files** with any polygon feature layer and an output folder. It creates one portable
+Files** with one polygon and one polyline feature layer plus an output folder. It creates one portable
 `.lyrx` file for every Automated Feature Extraction profile. The source layer is used
 only to create a valid layer file; after adding a `.lyrx` to a map, use **Set Data
 Source** to point it at the corresponding toolbox output.

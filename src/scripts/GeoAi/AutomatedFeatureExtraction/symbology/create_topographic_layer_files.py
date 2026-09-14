@@ -1,8 +1,8 @@
 """Create portable ArcGIS Pro layer files for Automated Feature Extraction outputs.
 
-Run this script with the ArcGIS Pro Python environment. It uses an existing polygon
-feature class only as a temporary schema source; the resulting layer files can be
-repointed to any compatible toolbox output in ArcGIS Pro.
+Run this script with the ArcGIS Pro Python environment. It uses a polygon feature
+class and a polyline feature class as temporary schema sources; the resulting layer
+files can be repointed to compatible toolbox outputs in ArcGIS Pro.
 """
 
 import os
@@ -37,12 +37,14 @@ LAYER_STYLES = {
 }
 
 
-def create_layer_files(template_features, output_directory):
+def create_layer_files(polygon_template_features, polyline_template_features, output_directory):
     """Save one simple-renderer layer file for every supported profile."""
-    template_description = arcpy.Describe(template_features)
-    if template_description.shapeType != "Polygon":
-        raise ValueError("Template Features must be a polygon feature class or layer.")
-    template_path = template_description.catalogPath
+    polygon_template = arcpy.Describe(polygon_template_features)
+    polyline_template = arcpy.Describe(polyline_template_features)
+    if polygon_template.shapeType != "Polygon":
+        raise ValueError("Polygon Template Features must be a polygon feature class or layer.")
+    if polyline_template.shapeType != "Polyline":
+        raise ValueError("Polyline Template Features must be a polyline feature class or layer.")
 
     os.makedirs(output_directory, exist_ok=True)
     project = arcpy.mp.ArcGISProject("CURRENT")
@@ -51,6 +53,9 @@ def create_layer_files(template_features, output_directory):
         raise RuntimeError("Open a map in ArcGIS Pro before running this script.")
 
     for feature_type, (fill_color, outline_color, outline_width) in LAYER_STYLES.items():
+        template_path = (
+            polyline_template.catalogPath if feature_type == "Roads" else polygon_template.catalogPath
+        )
         layer = active_map.addDataFromPath(template_path)
         try:
             layer.name = feature_type
@@ -73,5 +78,6 @@ def create_layer_files(template_features, output_directory):
 if __name__ == "__main__":
     create_layer_files(
         arcpy.GetParameterAsText(0),
-        arcpy.GetParameterAsText(1) or os.path.dirname(__file__),
+        arcpy.GetParameterAsText(1),
+        arcpy.GetParameterAsText(2) or os.path.dirname(__file__),
     )

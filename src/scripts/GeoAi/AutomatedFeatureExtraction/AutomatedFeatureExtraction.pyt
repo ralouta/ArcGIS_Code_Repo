@@ -173,7 +173,7 @@ class AutomatedFeatureExtraction(object):
         )
         in_target = feature_parameter(
             "Input Features to Classify (Optional)", "in_target_features",
-            "Feature Definition", ["Polygon"],
+            "Feature Definition", ["Polygon", "Polyline"],
         )
         aoi = feature_parameter(
             "Area of Interest Polygon (Optional; Overrides Extent)", "in_aoi",
@@ -461,6 +461,7 @@ class AutomatedFeatureExtraction(object):
                 target_features,
                 sample_points,
                 parameters[self.CLASS_FIELD].valueAsText,
+                feature_type,
                 messages,
             )
         generated_embeddings = None
@@ -669,6 +670,7 @@ def _publish_candidate_features(input_features, output_features, profile, contex
         ("MODEL_FILE", "TEXT", 1000),
         ("RUN_UTC", "DATE", None),
         ("AREA_SQM", "DOUBLE", None),
+        ("LENGTH_M", "DOUBLE", None),
     )
     try:
         arcpy.management.CopyFeatures(input_features, staged_features)
@@ -679,20 +681,26 @@ def _publish_candidate_features(input_features, output_features, profile, contex
                 if field_length:
                     add_kwargs["field_length"] = field_length
                 arcpy.management.AddField(staged_features, **add_kwargs)
+        is_polyline = profile["production_geometry"] == "Polyline"
         minimum_area = float(profile["minimum_area_sqm"])
+        minimum_length = float(profile.get("minimum_length_m", 0.0))
         run_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         with arcpy.da.UpdateCursor(
             staged_features,
             ["SHAPE@", "AFE_RUN_ID", "FEATURE_CODE", "FEATURE_TYPE", "GEOM_ROLE",
              "QC_STATUS", "QC_REASON", "TOOL_VERSION", "PROFILE_VER", "SOURCE_IMAGE",
-             "MODEL_ITEM_ID", "MODEL_FILE", "RUN_UTC", "AREA_SQM"],
+             "MODEL_ITEM_ID", "MODEL_FILE", "RUN_UTC", "AREA_SQM", "LENGTH_M"],
         ) as cursor:
             for row in cursor:
                 geometry = row[0]
                 area_sqm = geometry.getArea("GEODESIC", "SQUAREMETERS") if geometry else 0.0
-                if not geometry or area_sqm <= 0:
-                    qc_status, qc_reason = "Rejected", "Empty, null, or zero-area geometry"
-                elif area_sqm < minimum_area:
+                length_m = geometry.getLength("GEODESIC", "METERS") if geometry else 0.0
+                if not geometry or (length_m <= 0 if is_polyline else area_sqm <= 0):
+                    qc_status, qc_reason = "Rejected", "Empty, null, or zero-measure geometry"
+                elif is_polyline and length_m < minimum_length:
+                    qc_status = "Rejected"
+                    qc_reason = f"Length below profile minimum of {minimum_length:g} meters"
+                elif not is_polyline and area_sqm < minimum_area:
                     qc_status = "Rejected"
                     qc_reason = f"Area below profile minimum of {minimum_area:g} square meters"
                 elif profile["feature_code"] == "CUSTOM_CANDIDATE":
@@ -704,7 +712,7 @@ def _publish_candidate_features(input_features, output_features, profile, contex
                     "Candidate" if context["workflow"] == "Feature Classification" else "Evidence",
                     qc_status, qc_reason, TOOL_VERSION, "1.0",
                     context.get("source_image"), context.get("model_id"), context.get("model_file"),
-                    run_utc, area_sqm,
+                    run_utc, area_sqm, length_m,
                 ]
                 cursor.updateRow(row)
         if arcpy.Exists(output_features):
@@ -820,7 +828,7 @@ def _class_value_label(feature_class, field_name, value):
         return str(value)
 
 
-def _validate_class_target_coverage(target_features, sample_points, class_field, messages):
+def _validate_class_target_coverage(target_features, sample_points, class_field, feature_type, messages):
     sample_layer = arcpy.CreateUniqueName("class_coverage_samples")
     target_layer = arcpy.CreateUniqueName("class_coverage_targets")
     insufficient_classes = []
@@ -846,7 +854,11 @@ def _validate_class_target_coverage(target_features, sample_points, class_field,
                 f"{field_delimiter} = {_sql_literal(value, field_type)}",
             )
             arcpy.management.SelectLayerByLocation(
-                target_layer, "INTERSECT", sample_layer, None, "NEW_SELECTION"
+                target_layer,
+                "WITHIN_A_DISTANCE" if feature_type == "Roads" else "INTERSECT",
+                sample_layer,
+                "10 Meters" if feature_type == "Roads" else None,
+                "NEW_SELECTION",
             )
             target_count = int(arcpy.management.GetCount(target_layer)[0])
             point_count = int(arcpy.management.GetCount(sample_layer)[0])
@@ -860,10 +872,10 @@ def _validate_class_target_coverage(target_features, sample_points, class_field,
                 "Each classification class must intersect at least one target feature "
                 "before embeddings are generated. Insufficient classes: "
                 + "; ".join(insufficient_classes)
-                + ". Add or move example points so they intersect a candidate polygon."
+                + ". Add or move example points so they intersect a candidate feature."
             )
         messages.addMessage(
-            "Classification preflight confirmed that every class intersects at least "
+            "Classification preflight confirmed that every class is represented near at least "
             "one target feature; embedding coverage is validated per class next."
         )
     finally:

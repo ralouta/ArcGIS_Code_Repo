@@ -3,9 +3,6 @@ import arcpy
 from validation_helpers import meters_to_spatial_units, square_meters_to_spatial_units
 
 
-MAX_ROAD_CENTERLINES = 10000
-
-
 def clean_road_surfaces(
     input_features, output_features, profile, spatial_reference, scratch_workspace, messages,
 ):
@@ -13,30 +10,20 @@ def clean_road_surfaces(
     screened_features = arcpy.CreateUniqueName("road_screened", scratch_workspace)
     simplified_features = arcpy.CreateUniqueName("road_simplified", scratch_workspace)
     cleaned_features = arcpy.CreateUniqueName("road_cleaned", scratch_workspace)
-    polygon_boundary_features = arcpy.CreateUniqueName("road_boundaries", scratch_workspace)
-    polygon_boundary_lines = arcpy.CreateUniqueName("road_boundary_lines", scratch_workspace)
-    centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
-    simplified_centerline_features = arcpy.CreateUniqueName(
-        "road_simplified_centerlines", scratch_workspace
-    )
-    buffered_features = arcpy.CreateUniqueName("road_reconstructed", scratch_workspace)
-    dissolved_output_features = arcpy.CreateUniqueName("road_final", scratch_workspace)
+    dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
+    component_features = arcpy.CreateUniqueName("road_components", scratch_workspace)
+    boundary_features = arcpy.CreateUniqueName("road_boundaries", scratch_workspace)
+    collapsed_features = arcpy.CreateUniqueName("road_collapsed", scratch_workspace)
     mask_simplification = meters_to_spatial_units(
         profile["road_mask_simplification_m"], spatial_reference
-    )
-    centerline_extension = meters_to_spatial_units(
-        profile["road_centerline_extension_m"], spatial_reference
-    )
-    centerline_simplification = meters_to_spatial_units(
-        profile["road_centerline_simplification_m"], spatial_reference
     )
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
     )
     try:
         messages.addMessage(
-            "Running road-surface QA: simplifying masks, removing small parts, and "
-            "reconstructing polygons from straight-preserving centerlines..."
+            "Running road-centerline QA: simplifying masks, removing small parts, and "
+            "collapsing paired boundaries into observed centerlines..."
         )
         messages.addMessage("Road QA: copying SAM3 polygon masks...")
         arcpy.management.CopyFeatures(input_features, repaired_features)
@@ -70,111 +57,77 @@ def clean_road_surfaces(
             part_area_percent="0",
             part_option="ANY",
         )
-        messages.addMessage("Road QA: removing remaining undersized polygon parts...")
-        filter_by_minimum_geodesic_area(
-            cleaned_features,
-            polygon_boundary_features,
-            profile["road_minimum_part_area_sqm"],
-            scratch_workspace,
+        messages.addMessage("Road QA: dissolving touching road masks into observed components...")
+        arcpy.analysis.PairwiseDissolve(
+            cleaned_features, dissolved_features, multi_part="MULTI_PART"
         )
-        polygon_count = int(arcpy.management.GetCount(polygon_boundary_features)[0])
+        arcpy.management.MultipartToSinglepart(dissolved_features, component_features)
+        arcpy.management.AddField(component_features, "AFE_COMPONENT_ID", "LONG")
+        arcpy.management.AddField(component_features, "ROAD_AREA_SQM", "DOUBLE")
+        component_oid_field = arcpy.Describe(component_features).OIDFieldName
+        arcpy.management.CalculateField(
+            component_features, "AFE_COMPONENT_ID", f"!{component_oid_field}!", "PYTHON3"
+        )
+        arcpy.management.CalculateGeometryAttributes(
+            component_features, [["ROAD_AREA_SQM", "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+        )
+        component_count = int(arcpy.management.GetCount(component_features)[0])
         messages.addMessage(
-            f"Road QA: deriving centerlines from {polygon_count:,} cleaned polygon(s)..."
+            f"Road QA: collapsing paired boundaries for {component_count:,} observed road component(s)..."
         )
-        arcpy.topographic.PolygonToCenterline(
-            polygon_boundary_features, centerline_features
+        arcpy.management.PolygonToLine(
+            component_features, boundary_features, "NO_IDENTIFY_NEIGHBORS", "ATTRIBUTES"
         )
-        if not int(arcpy.management.GetCount(centerline_features)[0]):
-            raise arcpy.ExecuteError("Road QA could not derive usable centerlines.")
-        centerline_count = int(arcpy.management.GetCount(centerline_features)[0])
-        messages.addMessage(
-            f"Road QA: measuring widths for {centerline_count:,} centerline(s)..."
+        arcpy.cartography.CollapseDualLinesToCenterline(boundary_features, collapsed_features)
+        if not int(arcpy.management.GetCount(collapsed_features)[0]):
+            raise arcpy.ExecuteError("Road QA could not derive usable centerlines from road boundaries.")
+        messages.addMessage("Road QA: assigning component widths to centerlines...")
+        arcpy.analysis.SpatialJoin(
+            collapsed_features, component_features, output_features,
+            "JOIN_ONE_TO_ONE", "KEEP_COMMON", match_option="INTERSECT"
         )
-        if centerline_count > MAX_ROAD_CENTERLINES:
-            messages.addWarningMessage(
-                f"Road QA derived {centerline_count:,} centerline fragments, exceeding the "
-                f"{MAX_ROAD_CENTERLINES:,} safety limit. Retaining cleaned road masks instead "
-                "of reconstructing from fragmented centerlines."
+        arcpy.management.AddField(output_features, "ROAD_WIDTH_M", "DOUBLE")
+        arcpy.management.AddField(output_features, "ROAD_LENGTH_M", "DOUBLE")
+        arcpy.management.AddField(output_features, "WIDTH_METHOD", "TEXT", field_length=64)
+        arcpy.management.CalculateGeometryAttributes(
+            output_features, [["ROAD_LENGTH_M", "LENGTH_GEODESIC"]], length_unit="METERS"
+        )
+        component_lengths = {}
+        with arcpy.da.SearchCursor(output_features, ["AFE_COMPONENT_ID", "ROAD_LENGTH_M"]) as cursor:
+            for component_id, length_m in cursor:
+                component_lengths[component_id] = component_lengths.get(component_id, 0.0) + (length_m or 0.0)
+        component_areas = {
+            component_id: area_sqm
+            for component_id, area_sqm in arcpy.da.SearchCursor(
+                component_features, ["AFE_COMPONENT_ID", "ROAD_AREA_SQM"]
             )
-            arcpy.management.CopyFeatures(polygon_boundary_features, output_features)
-            return
-        arcpy.management.PolygonToLine(polygon_boundary_features, polygon_boundary_lines)
-        arcpy.analysis.Near(
-            centerline_features,
-            polygon_boundary_lines,
-            search_radius="25 Meters",
-            location="NO_LOCATION",
-            angle="NO_ANGLE",
-            method="PLANAR",
-            distance_unit="Meters",
-        )
-        calculate_road_buffer_widths(centerline_features, profile, spatial_reference)
-        messages.addMessage("Road QA: extending and simplifying centerlines...")
-        arcpy.edit.ExtendLine(centerline_features, centerline_extension, "EXTENSION")
-        arcpy.cartography.SimplifyLine(
-            centerline_features,
-            simplified_centerline_features,
-            "POINT_REMOVE",
-            centerline_simplification,
-            error_option="RESOLVE_ERRORS",
-        )
-        messages.addMessage("Road QA: reconstructing road polygons from centerlines...")
-        arcpy.analysis.PairwiseBuffer(
-            simplified_centerline_features,
-            buffered_features,
-            "AFE_HALF_WIDTH",
-            dissolve_option="NONE",
-        )
-        messages.addMessage("Road QA: dissolving reconstructed road polygons...")
-        arcpy.analysis.PairwiseDissolve(buffered_features, dissolved_output_features)
-        arcpy.management.RepairGeometry(dissolved_output_features, "DELETE_NULL", "ESRI")
-        filter_by_minimum_geodesic_area(
-            dissolved_output_features,
-            output_features,
-            profile["minimum_area_sqm"],
-            scratch_workspace,
-        )
-        if not int(arcpy.management.GetCount(output_features)[0]):
-            raise arcpy.ExecuteError("Road QA smoothing produced no valid polygons.")
+        }
+        with arcpy.da.UpdateCursor(
+            output_features, ["AFE_COMPONENT_ID", "ROAD_WIDTH_M", "WIDTH_METHOD"]
+        ) as cursor:
+            for component_id, _, _ in cursor:
+                length_m = component_lengths.get(component_id, 0.0)
+                area_sqm = component_areas.get(component_id, 0.0)
+                width_m = area_sqm / length_m if length_m else 0.0
+                cursor.updateRow([component_id, width_m, "MaskAreaOverCenterlineLength"])
         messages.addMessage(
-            "Road-surface QA simplified masks and centerlines using point removal, "
-            "removed parts below {0:g} sq m, extended centerlines {1:g} m, and "
-            "reconstructed polygons with half-widths constrained to {2:g}-{3:g} m."
-            .format(
-                profile["road_minimum_part_area_sqm"],
-                profile["road_centerline_extension_m"],
-                profile["road_minimum_half_width_m"],
-                profile["road_maximum_half_width_m"],
-            )
+            "Road QA produced observed centerline candidates without extending or connecting "
+            "separate road masks; ROAD_WIDTH_M is component mask area divided by total centerline length."
         )
     except Exception as error:
-        messages.addWarningMessage(
-            f"Road-surface QA could not complete ({error}); retaining original road detections."
+        messages.addErrorMessage(
+            f"Road-centerline QA could not complete ({error}); no polygon fallback was published."
         )
-        arcpy.management.CopyFeatures(input_features, output_features)
+        if arcpy.Exists(output_features):
+            arcpy.management.Delete(output_features)
+        raise
     finally:
         for dataset in (
             repaired_features, screened_features, simplified_features, cleaned_features,
-            polygon_boundary_features, polygon_boundary_lines, centerline_features,
-            simplified_centerline_features, buffered_features, dissolved_output_features,
+            dissolved_features, component_features, boundary_features, collapsed_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
-
-
-def calculate_road_buffer_widths(centerline_features, profile, spatial_reference):
-    width_field = "AFE_HALF_WIDTH"
-    minimum_width = meters_to_spatial_units(
-        profile["road_minimum_half_width_m"], spatial_reference
-    )
-    maximum_width = meters_to_spatial_units(
-        profile["road_maximum_half_width_m"], spatial_reference
-    )
-    arcpy.management.AddField(centerline_features, width_field, "DOUBLE")
-    with arcpy.da.UpdateCursor(centerline_features, ["NEAR_DIST", width_field]) as cursor:
-        for near_distance, _ in cursor:
-            measured_width = meters_to_spatial_units(float(near_distance or 0), spatial_reference)
-            cursor.updateRow([near_distance, max(minimum_width, min(measured_width, maximum_width))])
 
 
 def filter_by_minimum_geodesic_area(

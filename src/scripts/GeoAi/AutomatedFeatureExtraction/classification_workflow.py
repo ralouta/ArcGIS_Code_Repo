@@ -96,8 +96,11 @@ def classify_target_features(
     target_features, similar_features, seed_features, output_features, scratch_workspace, messages,
 ):
     target_id_field = "AFE_TARGET_ID"
-    target_area_field = "AFE_AREA_SQM"
-    evidence_area_field = "AFE_EVID_SQM"
+    is_polyline = arcpy.Describe(target_features).shapeType == "Polyline"
+    target_measure_field = "AFE_LENGTH_M" if is_polyline else "AFE_AREA_SQM"
+    evidence_measure_field = "AFE_EVID_M" if is_polyline else "AFE_EVID_SQM"
+    geometry_property = "LENGTH_GEODESIC" if is_polyline else "AREA_GEODESIC"
+    measure_unit = "METERS" if is_polyline else "SQUARE_METERS"
     arcpy.management.CopyFeatures(target_features, output_features)
     existing_fields = {field.name.upper() for field in arcpy.ListFields(output_features)}
     if target_id_field not in existing_fields:
@@ -110,12 +113,14 @@ def classify_target_features(
         arcpy.management.AddField(output_features, "CLASS_REASON", "TEXT", field_length=255)
     if "EVIDENCE_METRIC" not in existing_fields:
         arcpy.management.AddField(output_features, "EVIDENCE_METRIC", "TEXT", field_length=32)
-    if target_area_field not in existing_fields:
-        arcpy.management.AddField(output_features, target_area_field, "DOUBLE")
+    if target_measure_field not in existing_fields:
+        arcpy.management.AddField(output_features, target_measure_field, "DOUBLE")
     oid_field = arcpy.Describe(output_features).OIDFieldName
     arcpy.management.CalculateField(output_features, target_id_field, f"!{oid_field}!", "PYTHON3")
     arcpy.management.CalculateGeometryAttributes(
-        output_features, [[target_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+        output_features, [[target_measure_field, geometry_property]],
+        length_unit=measure_unit if is_polyline else None,
+        area_unit=measure_unit if not is_polyline else None,
     )
     evidence_by_target = {}
     for evidence_features in (similar_features, seed_features):
@@ -125,19 +130,21 @@ def classify_target_features(
                 [output_features, evidence_features], intersections, "ALL", None, "INPUT"
             )
             if int(arcpy.management.GetCount(intersections)[0]):
-                arcpy.management.AddField(intersections, evidence_area_field, "DOUBLE")
+                arcpy.management.AddField(intersections, evidence_measure_field, "DOUBLE")
                 arcpy.management.CalculateGeometryAttributes(
-                    intersections, [[evidence_area_field, "AREA_GEODESIC"]], area_unit="SQUARE_METERS"
+                    intersections, [[evidence_measure_field, geometry_property]],
+                    length_unit=measure_unit if is_polyline else None,
+                    area_unit=measure_unit if not is_polyline else None,
                 )
                 with arcpy.da.SearchCursor(
-                    intersections, [target_id_field, "AFE_CLASS", evidence_area_field]
+                    intersections, [target_id_field, "AFE_CLASS", evidence_measure_field]
                 ) as cursor:
-                    for target_id, class_value, evidence_area in cursor:
+                    for target_id, class_value, evidence_measure in cursor:
                         if target_id is None or not class_value:
                             continue
                         target_evidence = evidence_by_target.setdefault(target_id, {})
                         target_evidence[class_value] = (
-                            target_evidence.get(class_value, 0.0) + (evidence_area or 0.0)
+                            target_evidence.get(class_value, 0.0) + (evidence_measure or 0.0)
                         )
         finally:
             if arcpy.Exists(intersections):
@@ -146,16 +153,16 @@ def classify_target_features(
     classified_count = 0
     with arcpy.da.UpdateCursor(
         output_features,
-        [target_id_field, target_area_field, "AUTO_CLASS", "CLASS_COV_PCT", "CLASS_REASON", "EVIDENCE_METRIC"],
+        [target_id_field, target_measure_field, "AUTO_CLASS", "CLASS_COV_PCT", "CLASS_REASON", "EVIDENCE_METRIC"],
     ) as cursor:
-        for target_id, target_area, class_value, coverage_percent, class_reason, evidence_metric in cursor:
+        for target_id, target_measure, class_value, coverage_percent, class_reason, evidence_metric in cursor:
             class_evidence = evidence_by_target.get(target_id, {})
             if class_evidence:
                 ranked_classes = sorted(
                     class_evidence.items(), key=lambda item: (-item[1], str(item[0]).casefold())
                 )
-                class_value, evidence_area = ranked_classes[0]
-                coverage_percent = min(100.0, (evidence_area / target_area) * 100.0) if target_area else 0.0
+                class_value, evidence_measure = ranked_classes[0]
+                coverage_percent = min(100.0, (evidence_measure / target_measure) * 100.0) if target_measure else 0.0
                 tied_classes = [
                     str(value) for value, area in ranked_classes
                     if math.isclose(area, evidence_area, rel_tol=1e-9, abs_tol=1e-6)
@@ -172,13 +179,13 @@ def classify_target_features(
                 class_reason = "No overlapping class evidence"
             cursor.updateRow([
                 target_id,
-                target_area,
+                target_measure,
                 class_value,
                 coverage_percent,
                 class_reason,
-                "AreaCoveragePercent",
+                "LengthCoveragePercent" if is_polyline else "AreaCoveragePercent",
             ])
-    arcpy.management.DeleteField(output_features, [target_id_field, target_area_field])
+    arcpy.management.DeleteField(output_features, [target_id_field, target_measure_field])
     messages.addMessage(
         f"Classified {classified_count} of {int(arcpy.management.GetCount(output_features)[0])} target feature(s)."
     )

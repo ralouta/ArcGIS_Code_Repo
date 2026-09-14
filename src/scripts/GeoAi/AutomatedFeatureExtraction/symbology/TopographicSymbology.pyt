@@ -29,6 +29,15 @@ class CreateTopographicLayerFiles:
             parameterType="Required",
             direction="Input",
         )
+        template_features.filter.list = ["Polygon"]
+        road_template_features = arcpy.Parameter(
+            displayName="Template Road Centerline Features",
+            name="road_template_features",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input",
+        )
+        road_template_features.filter.list = ["Polyline"]
         output_directory = arcpy.Parameter(
             displayName="Output Symbology Folder",
             name="output_directory",
@@ -37,9 +46,11 @@ class CreateTopographicLayerFiles:
             direction="Input",
         )
         output_directory.value = os.path.dirname(__file__)
-        return [template_features, output_directory]
+        return [template_features, road_template_features, output_directory]
 
     def execute(self, parameters, messages):
-        output_directory = parameters[1].valueAsText
+        output_directory = parameters[2].valueAsText
         messages.addMessage(f"Creating topographic layer files in {output_directory}...")
-        create_layer_files(parameters[0].valueAsText, output_directory)
+        create_layer_files(
+            parameters[0].valueAsText, parameters[1].valueAsText, output_directory
+        )

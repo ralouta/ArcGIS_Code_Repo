@@ -1,7 +1,7 @@
 import os
 
 
-TOOL_VERSION = "5.4.2"
+TOOL_VERSION = "5.5.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -73,17 +73,14 @@ FEATURE_PROFILES = {
         "detection_cell_size": 0.5,
         "embedding_grid_size": 11,
         "regularize": False,
-        "feature_code": "ROAD_SURFACE_CANDIDATE",
-        "production_geometry": "Polygon",
+        "feature_code": "ROAD_CENTERLINE",
+        "production_geometry": "Polyline",
         "minimum_area_sqm": 25.0,
+        "minimum_length_m": 5.0,
         "maximum_gsd_m": 0.5,
         "nms_overlap": 0.6,
         "road_mask_simplification_m": 5.0,
         "road_minimum_part_area_sqm": 50.0,
-        "road_centerline_extension_m": 25.0,
-        "road_centerline_simplification_m": 5.0,
-        "road_minimum_half_width_m": 2.5,
-        "road_maximum_half_width_m": 10.0,
     },
     "Water Bodies": {
         "prompt": "water body",
