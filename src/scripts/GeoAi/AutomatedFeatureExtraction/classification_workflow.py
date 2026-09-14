@@ -164,8 +164,8 @@ def classify_target_features(
                 class_value, evidence_measure = ranked_classes[0]
                 coverage_percent = min(100.0, (evidence_measure / target_measure) * 100.0) if target_measure else 0.0
                 tied_classes = [
-                    str(value) for value, area in ranked_classes
-                    if math.isclose(area, evidence_area, rel_tol=1e-9, abs_tol=1e-6)
+                    str(value) for value, measure in ranked_classes
+                    if math.isclose(measure, evidence_measure, rel_tol=1e-9, abs_tol=1e-6)
                 ]
                 if len(tied_classes) > 1:
                     class_value = "Ambiguous"
