@@ -1,3 +1,6 @@
+import math
+import os
+
 import arcpy
 
 from validation_helpers import meters_to_spatial_units, square_meters_to_spatial_units
@@ -13,14 +16,12 @@ def clean_road_surfaces(
     dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
     component_features = arcpy.CreateUniqueName("road_components", scratch_workspace)
     centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
+    connected_features = arcpy.CreateUniqueName("road_connected_centerlines", scratch_workspace)
     mask_simplification = meters_to_spatial_units(
         profile["road_mask_simplification_m"], spatial_reference
     )
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
-    )
-    connection_extension = meters_to_spatial_units(
-        profile["road_connection_extension_m"], spatial_reference
     )
     connection_snap = meters_to_spatial_units(profile["road_connection_snap_m"], spatial_reference)
     try:
@@ -81,15 +82,18 @@ def clean_road_surfaces(
         arcpy.topographic.PolygonToCenterline(component_features, centerline_features)
         if not int(arcpy.management.GetCount(centerline_features)[0]):
             raise arcpy.ExecuteError("Road QA could not derive usable interior centerlines.")
-        messages.addMessage(
-            "Road QA: extending centerlines up to {0:g} m and snapping coincident endpoints..."
-            .format(profile["road_connection_extension_m"])
+        connector_count = connect_road_centerline_gaps(
+            centerline_features, profile, spatial_reference, scratch_workspace
         )
-        arcpy.edit.ExtendLine(centerline_features, connection_extension, "EXTENSION")
+        messages.addMessage(
+            f"Road QA: connected {connector_count:,} direction-compatible centerline gap(s) up to "
+            f"{profile['road_connection_max_gap_m']:g} m and snapped coincident endpoints..."
+        )
         arcpy.management.Integrate(centerline_features, connection_snap)
+        arcpy.management.UnsplitLine(centerline_features, connected_features)
         messages.addMessage("Road QA: assigning component widths to centerlines...")
         arcpy.analysis.SpatialJoin(
-            centerline_features, component_features, output_features,
+            connected_features, component_features, output_features,
             "JOIN_ONE_TO_ONE", "KEEP_COMMON", match_option="INTERSECT"
         )
         arcpy.management.AddField(output_features, "ROAD_WIDTH_M", "DOUBLE")
@@ -117,8 +121,8 @@ def clean_road_surfaces(
                 width_m = area_sqm / length_m if length_m else 0.0
                 cursor.updateRow([component_id, width_m, "MaskAreaOverCenterlineLength"])
         messages.addMessage(
-            "Road QA produced centerline candidates with observed-mask widths and bounded "
-            "endpoint connections; ROAD_WIDTH_M is component mask area divided by total centerline length."
+            "Road QA produced centerline candidates with observed-mask widths and direction-compatible "
+            "gap connections; ROAD_WIDTH_M is component mask area divided by total centerline length."
         )
     except Exception as error:
         messages.addErrorMessage(
@@ -130,10 +134,93 @@ def clean_road_surfaces(
     finally:
         for dataset in (
             repaired_features, screened_features, simplified_features, cleaned_features,
-            dissolved_features, component_features, centerline_features,
+            dissolved_features, component_features, centerline_features, connected_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
+
+
+def connect_road_centerline_gaps(
+    centerline_features, profile, spatial_reference, scratch_workspace,
+):
+    maximum_gap = meters_to_spatial_units(profile["road_connection_max_gap_m"], spatial_reference)
+    maximum_angle = float(profile["road_connection_max_angle_degrees"])
+    endpoint_records = []
+    source_geometries = {}
+    with arcpy.da.SearchCursor(centerline_features, ["OID@", "SHAPE@"]) as cursor:
+        for object_id, geometry in cursor:
+            if not geometry:
+                continue
+            source_geometries[object_id] = geometry
+            for part_index, part in enumerate(geometry):
+                points = [point for point in part if point]
+                if len(points) < 2:
+                    continue
+                endpoint_records.extend((
+                    (object_id, part_index, 0, points[0], _outward_vector(points[0], points[1])),
+                    (object_id, part_index, -1, points[-1], _outward_vector(points[-1], points[-2])),
+                ))
+    candidates = []
+    for index, endpoint in enumerate(endpoint_records):
+        for other_endpoint in endpoint_records[index + 1:]:
+            if endpoint[0] == other_endpoint[0]:
+                continue
+            distance = math.hypot(endpoint[3].X - other_endpoint[3].X, endpoint[3].Y - other_endpoint[3].Y)
+            if not 0 < distance <= maximum_gap:
+                continue
+            first_angle = _connection_angle(endpoint[4], endpoint[3], other_endpoint[3])
+            second_angle = _connection_angle(other_endpoint[4], other_endpoint[3], endpoint[3])
+            if first_angle <= maximum_angle and second_angle <= maximum_angle:
+                candidates.append((distance, max(first_angle, second_angle), endpoint, other_endpoint))
+    selected_endpoints = set()
+    connector_geometries = []
+    for _, _, first_endpoint, second_endpoint in sorted(candidates):
+        first_key = first_endpoint[:3]
+        second_key = second_endpoint[:3]
+        if first_key in selected_endpoints or second_key in selected_endpoints:
+            continue
+        connector = arcpy.Polyline(
+            arcpy.Array([first_endpoint[3], second_endpoint[3]]), spatial_reference
+        )
+        if any(
+            not connector.disjoint(geometry)
+            for object_id, geometry in source_geometries.items()
+            if object_id not in (first_endpoint[0], second_endpoint[0])
+        ):
+            continue
+        selected_endpoints.update((first_key, second_key))
+        connector_geometries.append(connector)
+    if not connector_geometries:
+        return 0
+    connector_features = arcpy.CreateUniqueName("road_gap_connectors", scratch_workspace)
+    try:
+        arcpy.management.CreateFeatureclass(
+            os.path.dirname(connector_features), os.path.basename(connector_features), "POLYLINE",
+            spatial_reference=spatial_reference,
+        )
+        with arcpy.da.InsertCursor(connector_features, ["SHAPE@"]) as cursor:
+            for connector in connector_geometries:
+                cursor.insertRow([connector])
+        arcpy.management.Append(connector_features, centerline_features, "NO_TEST")
+    finally:
+        if arcpy.Exists(connector_features):
+            arcpy.management.Delete(connector_features)
+    return len(connector_geometries)
+
+
+def _outward_vector(endpoint, adjacent_point):
+    return endpoint.X - adjacent_point.X, endpoint.Y - adjacent_point.Y
+
+
+def _connection_angle(outward_vector, endpoint, other_endpoint):
+    connection_vector = other_endpoint.X - endpoint.X, other_endpoint.Y - endpoint.Y
+    outward_length = math.hypot(*outward_vector)
+    connection_length = math.hypot(*connection_vector)
+    if not outward_length or not connection_length:
+        return 180.0
+    cosine = sum(first * second for first, second in zip(outward_vector, connection_vector))
+    cosine /= outward_length * connection_length
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
 
 def filter_by_minimum_geodesic_area(
