@@ -136,6 +136,14 @@ def clean_road_surfaces(
         finally:
             if arcpy.Exists(short_segment_layer):
                 arcpy.management.Delete(short_segment_layer)
+        remaining_segment_count = int(arcpy.management.GetCount(output_features)[0])
+        if not remaining_segment_count:
+            raise arcpy.ExecuteError(
+                "Road QA removed every centerline as a short fragment; no road candidates remain."
+            )
+        messages.addMessage(
+            f"Road QA retained {remaining_segment_count:,} centerline candidate(s) after fragment removal."
+        )
         component_lengths = {}
         with arcpy.da.SearchCursor(output_features, ["AFE_COMPONENT_ID", "ROAD_LENGTH_M"]) as cursor:
             for component_id, length_m in cursor:
@@ -191,6 +199,9 @@ def connect_road_centerline_gaps(
         profile["road_long_directional_connection_max_angle_degrees"]
     )
     score_margin = float(profile["road_connection_score_margin"])
+    tangent_distance = meters_to_spatial_units(
+        profile["road_connection_tangent_m"], spatial_reference
+    )
     endpoint_records = []
     source_geometries = {}
     with arcpy.da.SearchCursor(centerline_features, ["OID@", "SHAPE@"]) as cursor:
@@ -203,8 +214,8 @@ def connect_road_centerline_gaps(
                 if len(points) < 2:
                     continue
                 endpoint_records.extend((
-                    (object_id, part_index, 0, points[0], _outward_vector(points[0], points[1])),
-                    (object_id, part_index, -1, points[-1], _outward_vector(points[-1], points[-2])),
+                    (object_id, part_index, 0, points[0], _outward_vector(points, tangent_distance)),
+                    (object_id, part_index, -1, points[-1], _outward_vector(points, tangent_distance, False)),
                 ))
     candidates = []
     candidates_by_endpoint = {}
@@ -279,8 +290,21 @@ def connect_road_centerline_gaps(
     return len(connector_geometries)
 
 
-def _outward_vector(endpoint, adjacent_point):
-    return endpoint.X - adjacent_point.X, endpoint.Y - adjacent_point.Y
+def _outward_vector(points, tangent_distance, from_start=True):
+    endpoint = points[0] if from_start else points[-1]
+    candidates = points[1:] if from_start else reversed(points[:-1])
+    previous_point = endpoint
+    accumulated_distance = 0.0
+    tangent_point = previous_point
+    for candidate_point in candidates:
+        accumulated_distance += math.hypot(
+            candidate_point.X - previous_point.X, candidate_point.Y - previous_point.Y
+        )
+        tangent_point = candidate_point
+        if accumulated_distance >= tangent_distance:
+            break
+        previous_point = candidate_point
+    return endpoint.X - tangent_point.X, endpoint.Y - tangent_point.Y
 
 
 def _connection_angle(outward_vector, endpoint, other_endpoint):
@@ -352,6 +376,9 @@ def clean_agricultural_fields(
         )
         arcpy.management.CopyFeatures(input_features, repaired_features)
         arcpy.management.RepairGeometry(repaired_features, "DELETE_NULL", "ESRI")
+        repaired_count = int(arcpy.management.GetCount(repaired_features)[0])
+        if not repaired_count:
+            raise arcpy.ExecuteError("Agricultural-field QA repair produced no valid polygons.")
         rejected_count = filter_by_minimum_geodesic_area(
             repaired_features,
             screened_features,
@@ -363,12 +390,21 @@ def clean_agricultural_fields(
                 f"Rejected {rejected_count:,} agricultural fragment(s) below "
                 f"{profile['field_minimum_area_sqm']:g} sq m."
             )
+        screened_count = int(arcpy.management.GetCount(screened_features)[0])
+        if not screened_count:
+            raise arcpy.ExecuteError("Agricultural-field QA removed all polygons by minimum area.")
         arcpy.analysis.PairwiseBuffer(
             screened_features, contracted_features, -contraction_distance, dissolve_option="NONE"
         )
         arcpy.management.RepairGeometry(contracted_features, "DELETE_NULL", "ESRI")
-        if not int(arcpy.management.GetCount(contracted_features)[0]):
+        contracted_count = int(arcpy.management.GetCount(contracted_features)[0])
+        if not contracted_count:
             raise arcpy.ExecuteError("Agricultural-field QA contraction removed all polygons.")
+        if contracted_count < screened_count:
+            messages.addMessage(
+                f"Agricultural-field QA contraction removed {screened_count - contracted_count:,} "
+                "narrow or invalid polygon(s)."
+            )
         arcpy.management.MultipartToSinglepart(
             contracted_features, contracted_singlepart_features
         )
@@ -432,10 +468,12 @@ def clean_agricultural_fields(
             )
         )
     except Exception as error:
-        messages.addWarningMessage(
-            f"Agricultural-field QA could not complete ({error}); retaining original field detections."
+        messages.addErrorMessage(
+            f"Agricultural-field QA could not complete ({error}); no uncleaned mask fallback was published."
         )
-        arcpy.management.CopyFeatures(input_features, output_features)
+        if arcpy.Exists(output_features):
+            arcpy.management.Delete(output_features)
+        raise
     finally:
         for dataset in (
             repaired_features, screened_features, contracted_features,

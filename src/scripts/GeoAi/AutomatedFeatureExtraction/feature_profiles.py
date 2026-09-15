@@ -1,7 +1,7 @@
 import os
 
 
-TOOL_VERSION = "5.9.1"
+TOOL_VERSION = "5.10.1"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -91,6 +91,7 @@ FEATURE_PROFILES = {
         "road_long_directional_connection_max_angle_degrees": 12.0,
         "road_connection_score_margin": 0.2,
         "road_connection_snap_m": 0.5,
+        "road_connection_tangent_m": 15.0,
     },
     "Water Bodies": {
         "prompt": "water body",
