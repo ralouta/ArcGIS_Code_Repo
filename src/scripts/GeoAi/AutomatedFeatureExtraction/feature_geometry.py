@@ -17,12 +17,16 @@ def clean_road_surfaces(
     component_features = arcpy.CreateUniqueName("road_components", scratch_workspace)
     centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
     connected_features = arcpy.CreateUniqueName("road_connected_centerlines", scratch_workspace)
+    generalized_features = arcpy.CreateUniqueName("road_generalized_centerlines", scratch_workspace)
     smoothed_features = arcpy.CreateUniqueName("road_smoothed_centerlines", scratch_workspace)
     mask_simplification = meters_to_spatial_units(
         profile["road_mask_simplification_m"], spatial_reference
     )
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
+    )
+    line_simplification = meters_to_spatial_units(
+        profile["road_line_simplification_m"], spatial_reference
     )
     line_smoothing = meters_to_spatial_units(profile["road_line_smoothing_m"], spatial_reference)
     connection_snap = meters_to_spatial_units(profile["road_connection_snap_m"], spatial_reference)
@@ -94,10 +98,15 @@ def clean_road_surfaces(
         arcpy.management.Integrate(centerline_features, connection_snap)
         arcpy.management.UnsplitLine(centerline_features, connected_features)
         messages.addMessage(
-            f"Road QA: smoothing connected centerlines at {profile['road_line_smoothing_m']:g} m..."
+            "Road QA: simplifying connected centerlines at {0:g} m and smoothing at {1:g} m..."
+            .format(profile["road_line_simplification_m"], profile["road_line_smoothing_m"])
+        )
+        arcpy.cartography.SimplifyLine(
+            connected_features, generalized_features, "POINT_REMOVE", line_simplification,
+            error_option="RESOLVE_ERRORS",
         )
         arcpy.cartography.SmoothLine(
-            connected_features, smoothed_features, "PAEK", line_smoothing,
+            generalized_features, smoothed_features, "PAEK", line_smoothing,
             endpoint_option="FIXED_CLOSED_ENDPOINT", error_option="NO_CHECK",
         )
         messages.addMessage("Road QA: assigning component widths to centerlines...")
@@ -160,7 +169,7 @@ def clean_road_surfaces(
         for dataset in (
             repaired_features, screened_features, simplified_features, cleaned_features,
             dissolved_features, component_features, centerline_features, connected_features,
-            smoothed_features,
+            generalized_features, smoothed_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
