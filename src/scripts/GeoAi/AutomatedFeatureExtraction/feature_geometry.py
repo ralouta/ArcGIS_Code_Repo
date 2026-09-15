@@ -144,7 +144,11 @@ def connect_road_centerline_gaps(
     centerline_features, profile, spatial_reference, scratch_workspace,
 ):
     maximum_gap = meters_to_spatial_units(profile["road_connection_max_gap_m"], spatial_reference)
+    directional_maximum_gap = meters_to_spatial_units(
+        profile["road_directional_connection_max_gap_m"], spatial_reference
+    )
     maximum_angle = float(profile["road_connection_max_angle_degrees"])
+    directional_maximum_angle = float(profile["road_directional_connection_max_angle_degrees"])
     endpoint_records = []
     source_geometries = {}
     with arcpy.da.SearchCursor(centerline_features, ["OID@", "SHAPE@"]) as cursor:
@@ -166,11 +170,12 @@ def connect_road_centerline_gaps(
             if endpoint[0] == other_endpoint[0]:
                 continue
             distance = math.hypot(endpoint[3].X - other_endpoint[3].X, endpoint[3].Y - other_endpoint[3].Y)
-            if not 0 < distance <= maximum_gap:
+            if not 0 < distance <= directional_maximum_gap:
                 continue
             first_angle = _connection_angle(endpoint[4], endpoint[3], other_endpoint[3])
             second_angle = _connection_angle(other_endpoint[4], other_endpoint[3], endpoint[3])
-            if first_angle <= maximum_angle and second_angle <= maximum_angle:
+            allowed_angle = maximum_angle if distance <= maximum_gap else directional_maximum_angle
+            if first_angle <= allowed_angle and second_angle <= allowed_angle:
                 candidates.append((distance, max(first_angle, second_angle), endpoint, other_endpoint))
     selected_endpoints = set()
     connector_geometries = []

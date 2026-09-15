@@ -1,7 +1,7 @@
 import os
 
 
-TOOL_VERSION = "5.7.0"
+TOOL_VERSION = "5.8.0"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -81,8 +81,10 @@ FEATURE_PROFILES = {
         "nms_overlap": 0.6,
         "road_mask_simplification_m": 5.0,
         "road_minimum_part_area_sqm": 50.0,
-        "road_connection_max_gap_m": 20.0,
-        "road_connection_max_angle_degrees": 30.0,
+        "road_connection_max_gap_m": 50.0,
+        "road_connection_max_angle_degrees": 45.0,
+        "road_directional_connection_max_gap_m": 100.0,
+        "road_directional_connection_max_angle_degrees": 20.0,
         "road_connection_snap_m": 0.5,
     },
     "Water Bodies": {
