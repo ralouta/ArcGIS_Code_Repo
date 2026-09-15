@@ -17,12 +17,14 @@ def clean_road_surfaces(
     component_features = arcpy.CreateUniqueName("road_components", scratch_workspace)
     centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
     connected_features = arcpy.CreateUniqueName("road_connected_centerlines", scratch_workspace)
+    smoothed_features = arcpy.CreateUniqueName("road_smoothed_centerlines", scratch_workspace)
     mask_simplification = meters_to_spatial_units(
         profile["road_mask_simplification_m"], spatial_reference
     )
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
     )
+    line_smoothing = meters_to_spatial_units(profile["road_line_smoothing_m"], spatial_reference)
     connection_snap = meters_to_spatial_units(profile["road_connection_snap_m"], spatial_reference)
     try:
         messages.addMessage(
@@ -91,9 +93,16 @@ def clean_road_surfaces(
         )
         arcpy.management.Integrate(centerline_features, connection_snap)
         arcpy.management.UnsplitLine(centerline_features, connected_features)
+        messages.addMessage(
+            f"Road QA: smoothing connected centerlines at {profile['road_line_smoothing_m']:g} m..."
+        )
+        arcpy.cartography.SmoothLine(
+            connected_features, smoothed_features, "PAEK", line_smoothing,
+            endpoint_option="FIXED_CLOSED_ENDPOINT", error_option="NO_CHECK",
+        )
         messages.addMessage("Road QA: assigning component widths to centerlines...")
         arcpy.analysis.SpatialJoin(
-            connected_features, component_features, output_features,
+            smoothed_features, component_features, output_features,
             "JOIN_ONE_TO_ONE", "KEEP_COMMON", match_option="INTERSECT"
         )
         arcpy.management.AddField(output_features, "ROAD_WIDTH_M", "DOUBLE")
@@ -102,6 +111,22 @@ def clean_road_surfaces(
         arcpy.management.CalculateGeometryAttributes(
             output_features, [["ROAD_LENGTH_M", "LENGTH_GEODESIC"]], length_unit="METERS"
         )
+        minimum_length = float(profile["minimum_length_m"])
+        short_segment_layer = arcpy.CreateUniqueName("road_short_segments", scratch_workspace)
+        try:
+            arcpy.management.MakeFeatureLayer(
+                output_features, short_segment_layer, f"ROAD_LENGTH_M < {minimum_length:g}"
+            )
+            short_segment_count = int(arcpy.management.GetCount(short_segment_layer)[0])
+            if short_segment_count:
+                arcpy.management.DeleteFeatures(short_segment_layer)
+                messages.addMessage(
+                    f"Road QA: removed {short_segment_count:,} centerline fragment(s) shorter than "
+                    f"{minimum_length:g} m."
+                )
+        finally:
+            if arcpy.Exists(short_segment_layer):
+                arcpy.management.Delete(short_segment_layer)
         component_lengths = {}
         with arcpy.da.SearchCursor(output_features, ["AFE_COMPONENT_ID", "ROAD_LENGTH_M"]) as cursor:
             for component_id, length_m in cursor:
@@ -135,6 +160,7 @@ def clean_road_surfaces(
         for dataset in (
             repaired_features, screened_features, simplified_features, cleaned_features,
             dissolved_features, component_features, centerline_features, connected_features,
+            smoothed_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
@@ -147,8 +173,14 @@ def connect_road_centerline_gaps(
     directional_maximum_gap = meters_to_spatial_units(
         profile["road_directional_connection_max_gap_m"], spatial_reference
     )
+    long_directional_maximum_gap = meters_to_spatial_units(
+        profile["road_long_directional_connection_max_gap_m"], spatial_reference
+    )
     maximum_angle = float(profile["road_connection_max_angle_degrees"])
     directional_maximum_angle = float(profile["road_directional_connection_max_angle_degrees"])
+    long_directional_maximum_angle = float(
+        profile["road_long_directional_connection_max_angle_degrees"]
+    )
     endpoint_records = []
     source_geometries = {}
     with arcpy.da.SearchCursor(centerline_features, ["OID@", "SHAPE@"]) as cursor:
@@ -170,11 +202,16 @@ def connect_road_centerline_gaps(
             if endpoint[0] == other_endpoint[0]:
                 continue
             distance = math.hypot(endpoint[3].X - other_endpoint[3].X, endpoint[3].Y - other_endpoint[3].Y)
-            if not 0 < distance <= directional_maximum_gap:
+            if not 0 < distance <= long_directional_maximum_gap:
                 continue
             first_angle = _connection_angle(endpoint[4], endpoint[3], other_endpoint[3])
             second_angle = _connection_angle(other_endpoint[4], other_endpoint[3], endpoint[3])
-            allowed_angle = maximum_angle if distance <= maximum_gap else directional_maximum_angle
+            if distance <= maximum_gap:
+                allowed_angle = maximum_angle
+            elif distance <= directional_maximum_gap:
+                allowed_angle = directional_maximum_angle
+            else:
+                allowed_angle = long_directional_maximum_angle
             if first_angle <= allowed_angle and second_angle <= allowed_angle:
                 candidates.append((distance, max(first_angle, second_angle), endpoint, other_endpoint))
     selected_endpoints = set()
