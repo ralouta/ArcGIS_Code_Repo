@@ -1,7 +1,7 @@
 import os
 
 
-TOOL_VERSION = "5.6.0"
+TOOL_VERSION = "5.6.1"
 WEB_MERCATOR_WKIDS = {3857, 102100}
 WEB_MERCATOR_ORIGIN = 20037508.342787
 WEB_MERCATOR_INITIAL_RESOLUTION = 156543.03392804097
@@ -81,8 +81,6 @@ FEATURE_PROFILES = {
         "nms_overlap": 0.6,
         "road_mask_simplification_m": 5.0,
         "road_minimum_part_area_sqm": 50.0,
-        "road_minimum_width_m": 2.5,
-        "road_maximum_width_m": 25.0,
         "road_connection_extension_m": 10.0,
         "road_connection_snap_m": 0.5,
     },

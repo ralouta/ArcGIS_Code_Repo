@@ -12,16 +12,13 @@ def clean_road_surfaces(
     cleaned_features = arcpy.CreateUniqueName("road_cleaned", scratch_workspace)
     dissolved_features = arcpy.CreateUniqueName("road_dissolved", scratch_workspace)
     component_features = arcpy.CreateUniqueName("road_components", scratch_workspace)
-    boundary_features = arcpy.CreateUniqueName("road_boundaries", scratch_workspace)
-    collapsed_features = arcpy.CreateUniqueName("road_collapsed", scratch_workspace)
+    centerline_features = arcpy.CreateUniqueName("road_centerlines", scratch_workspace)
     mask_simplification = meters_to_spatial_units(
         profile["road_mask_simplification_m"], spatial_reference
     )
     minimum_part_area = square_meters_to_spatial_units(
         profile["road_minimum_part_area_sqm"], spatial_reference
     )
-    maximum_width = meters_to_spatial_units(profile["road_maximum_width_m"], spatial_reference)
-    minimum_width = meters_to_spatial_units(profile["road_minimum_width_m"], spatial_reference)
     connection_extension = meters_to_spatial_units(
         profile["road_connection_extension_m"], spatial_reference
     )
@@ -79,25 +76,20 @@ def clean_road_surfaces(
         )
         component_count = int(arcpy.management.GetCount(component_features)[0])
         messages.addMessage(
-            f"Road QA: collapsing paired boundaries for {component_count:,} observed road component(s)..."
+            f"Road QA: deriving interior centerlines for {component_count:,} observed road component(s)..."
         )
-        arcpy.management.PolygonToLine(
-            component_features, boundary_features, "IGNORE_NEIGHBORS"
-        )
-        arcpy.cartography.CollapseDualLinesToCenterline(
-            boundary_features, collapsed_features, maximum_width, minimum_width
-        )
-        if not int(arcpy.management.GetCount(collapsed_features)[0]):
-            raise arcpy.ExecuteError("Road QA could not derive usable centerlines from road boundaries.")
+        arcpy.topographic.PolygonToCenterline(component_features, centerline_features)
+        if not int(arcpy.management.GetCount(centerline_features)[0]):
+            raise arcpy.ExecuteError("Road QA could not derive usable interior centerlines.")
         messages.addMessage(
             "Road QA: extending centerlines up to {0:g} m and snapping coincident endpoints..."
             .format(profile["road_connection_extension_m"])
         )
-        arcpy.edit.ExtendLine(collapsed_features, connection_extension, "EXTENSION")
-        arcpy.management.Integrate(collapsed_features, connection_snap)
+        arcpy.edit.ExtendLine(centerline_features, connection_extension, "EXTENSION")
+        arcpy.management.Integrate(centerline_features, connection_snap)
         messages.addMessage("Road QA: assigning component widths to centerlines...")
         arcpy.analysis.SpatialJoin(
-            collapsed_features, component_features, output_features,
+            centerline_features, component_features, output_features,
             "JOIN_ONE_TO_ONE", "KEEP_COMMON", match_option="INTERSECT"
         )
         arcpy.management.AddField(output_features, "ROAD_WIDTH_M", "DOUBLE")
@@ -138,7 +130,7 @@ def clean_road_surfaces(
     finally:
         for dataset in (
             repaired_features, screened_features, simplified_features, cleaned_features,
-            dissolved_features, component_features, boundary_features, collapsed_features,
+            dissolved_features, component_features, centerline_features,
         ):
             if arcpy.Exists(dataset):
                 arcpy.management.Delete(dataset)
