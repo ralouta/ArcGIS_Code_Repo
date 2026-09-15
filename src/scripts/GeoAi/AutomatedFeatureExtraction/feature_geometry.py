@@ -22,6 +22,10 @@ def clean_road_surfaces(
     )
     maximum_width = meters_to_spatial_units(profile["road_maximum_width_m"], spatial_reference)
     minimum_width = meters_to_spatial_units(profile["road_minimum_width_m"], spatial_reference)
+    connection_extension = meters_to_spatial_units(
+        profile["road_connection_extension_m"], spatial_reference
+    )
+    connection_snap = meters_to_spatial_units(profile["road_connection_snap_m"], spatial_reference)
     try:
         messages.addMessage(
             "Running road-centerline QA: simplifying masks, removing small parts, and "
@@ -85,6 +89,12 @@ def clean_road_surfaces(
         )
         if not int(arcpy.management.GetCount(collapsed_features)[0]):
             raise arcpy.ExecuteError("Road QA could not derive usable centerlines from road boundaries.")
+        messages.addMessage(
+            "Road QA: extending centerlines up to {0:g} m and snapping coincident endpoints..."
+            .format(profile["road_connection_extension_m"])
+        )
+        arcpy.edit.ExtendLine(collapsed_features, connection_extension, "EXTENSION")
+        arcpy.management.Integrate(collapsed_features, connection_snap)
         messages.addMessage("Road QA: assigning component widths to centerlines...")
         arcpy.analysis.SpatialJoin(
             collapsed_features, component_features, output_features,
@@ -115,8 +125,8 @@ def clean_road_surfaces(
                 width_m = area_sqm / length_m if length_m else 0.0
                 cursor.updateRow([component_id, width_m, "MaskAreaOverCenterlineLength"])
         messages.addMessage(
-            "Road QA produced observed centerline candidates without extending or connecting "
-            "separate road masks; ROAD_WIDTH_M is component mask area divided by total centerline length."
+            "Road QA produced centerline candidates with observed-mask widths and bounded "
+            "endpoint connections; ROAD_WIDTH_M is component mask area divided by total centerline length."
         )
     except Exception as error:
         messages.addErrorMessage(
