@@ -181,6 +181,7 @@ def connect_road_centerline_gaps(
     long_directional_maximum_angle = float(
         profile["road_long_directional_connection_max_angle_degrees"]
     )
+    score_margin = float(profile["road_connection_score_margin"])
     endpoint_records = []
     source_geometries = {}
     with arcpy.da.SearchCursor(centerline_features, ["OID@", "SHAPE@"]) as cursor:
@@ -197,6 +198,7 @@ def connect_road_centerline_gaps(
                     (object_id, part_index, -1, points[-1], _outward_vector(points[-1], points[-2])),
                 ))
     candidates = []
+    candidates_by_endpoint = {}
     for index, endpoint in enumerate(endpoint_records):
         for other_endpoint in endpoint_records[index + 1:]:
             if endpoint[0] == other_endpoint[0]:
@@ -213,13 +215,29 @@ def connect_road_centerline_gaps(
             else:
                 allowed_angle = long_directional_maximum_angle
             if first_angle <= allowed_angle and second_angle <= allowed_angle:
-                candidates.append((distance, max(first_angle, second_angle), endpoint, other_endpoint))
+                score = (
+                    distance / directional_maximum_gap
+                    + max(first_angle, second_angle) / allowed_angle
+                )
+                candidate = (score, distance, endpoint, other_endpoint)
+                candidates.append(candidate)
+                candidates_by_endpoint.setdefault(endpoint[:3], []).append(candidate)
+                candidates_by_endpoint.setdefault(other_endpoint[:3], []).append(candidate)
+    best_candidates = {}
+    for endpoint_key, endpoint_candidates in candidates_by_endpoint.items():
+        ranked_candidates = sorted(endpoint_candidates, key=lambda candidate: candidate[:2])
+        best_candidate = ranked_candidates[0]
+        runner_up_score = ranked_candidates[1][0] if len(ranked_candidates) > 1 else math.inf
+        if runner_up_score - best_candidate[0] >= score_margin:
+            best_candidates[endpoint_key] = best_candidate
     selected_endpoints = set()
     connector_geometries = []
     for _, _, first_endpoint, second_endpoint in sorted(candidates):
         first_key = first_endpoint[:3]
         second_key = second_endpoint[:3]
         if first_key in selected_endpoints or second_key in selected_endpoints:
+            continue
+        if best_candidates.get(first_key) is not best_candidates.get(second_key):
             continue
         connector = arcpy.Polyline(
             arcpy.Array([first_endpoint[3], second_endpoint[3]]), spatial_reference
@@ -229,6 +247,8 @@ def connect_road_centerline_gaps(
             for object_id, geometry in source_geometries.items()
             if object_id not in (first_endpoint[0], second_endpoint[0])
         ):
+            continue
+        if any(not connector.disjoint(existing_connector) for existing_connector in connector_geometries):
             continue
         selected_endpoints.update((first_key, second_key))
         connector_geometries.append(connector)
